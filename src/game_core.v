@@ -82,22 +82,21 @@ module game_core (
 
     // 4. Game State Registers
     reg [8:0] bird_y_r; wire [9:0] bird_y = {1'b0, bird_y_r}; reg signed [4:0] velocity;   
-    reg [9:0] pipe1_x, pipe2_x, grape1_x, grape2_x; reg [7:0] pipe1_gap_y, pipe2_gap_y; 
-    reg [9:0] grape1_y, grape2_y; reg pipe1_passed, pipe2_passed, grape1_active, grape2_active;
+    reg [9:0] pipe1_x, pipe2_x, grape_x; reg [7:0] pipe1_gap_y, pipe2_gap_y; 
+    reg [9:0] grape_y; reg pipe1_passed, pipe2_passed, grape_active;
     reg [3:0] score_tens, score_ones, h_score_tens, h_score_ones; reg game_over;
 
     wire signed [10:0] bird_y_11 = {1'b0, bird_y}, vel_11 = {{6{velocity[4]}}, velocity}, next_y = bird_y_11 + vel_11;
     wire [9:0] pipe_speed = 10'd3 + {6'd0, score_tens};
     wire [10:0] p1_next = {1'b0, pipe1_x} - {1'b0, pipe_speed}, p2_next = {1'b0, pipe2_x} - {1'b0, pipe_speed};
-    wire [10:0] g1_next = {1'b0, grape1_x} - {1'b0, pipe_speed}, g2_next = {1'b0, grape2_x} - {1'b0, pipe_speed};
+    wire [10:0] g_next = {1'b0, grape_x} - {1'b0, pipe_speed};
     wire p1_pass = !pipe1_passed && (pipe1_x < BIRD_X - PIPE_W), p2_pass = !pipe2_passed && (pipe2_x < BIRD_X - PIPE_W);
     wire score_gt_high = (score_tens > h_score_tens) || ((score_tens == h_score_tens) && (score_ones > h_score_ones));
     wire game_restart = game_over && (bird_y >= 10'd480 - BIRD_H) && jump_pending;
 
-    // Grape Hit logic (AABB) & Scoring Math
-    wire eat_g1 = grape1_active && (grape1_x < BIRD_X + BIRD_W) && (grape1_x + 10'd12 > BIRD_X) && (grape1_y < bird_y + BIRD_H) && (grape1_y + 10'd12 > bird_y);
-    wire eat_g2 = grape2_active && (grape2_x < BIRD_X + BIRD_W) && (grape2_x + 10'd12 > BIRD_X) && (grape2_y < bird_y + BIRD_H) && (grape2_y + 10'd12 > bird_y);
-    wire [3:0] score_add = ((p1_pass || p2_pass) ? 4'd1 : 4'd0) + ((eat_g1 || eat_g2) ? 4'd2 : 4'd0);
+    // Grape Hit logic (AABB) & Scoring Math (Optimized for 1 grape)
+    wire eat_g = grape_active && (grape_x < BIRD_X + BIRD_W) && (grape_x + 10'd10 > BIRD_X) && (grape_y < bird_y + BIRD_H) && (grape_y + 10'd10 > bird_y);
+    wire [3:0] score_add = ((p1_pass || p2_pass) ? 4'd1 : 4'd0) + (eat_g ? 4'd2 : 4'd0);
     wire [4:0] next_ones = score_ones + score_add;
 
     // 5. Main Loop
@@ -105,7 +104,7 @@ module game_core (
         if (!rst_n) begin
             bird_y_r <= 9'd240; velocity <= 5'sd0; pipe1_x <= 10'd640; pipe2_x <= 10'd960;
             pipe1_gap_y <= 8'd160; pipe2_gap_y <= 8'd220; pipe1_passed <= 1'b0; pipe2_passed <= 1'b0;
-            grape1_active <= 1'b0; grape2_active <= 1'b0; score_tens <= 4'd0; score_ones <= 4'd0;
+            grape_active <= 1'b0; score_tens <= 4'd0; score_ones <= 4'd0;
             h_score_tens <= 4'd0; h_score_ones <= 4'd0; game_over <= 1'b0;
         end else if (game_tick) begin
             if (crash1 || crash2 || (bird_y >= 10'd480 - BIRD_H)) game_over <= 1'b1;
@@ -116,7 +115,7 @@ module game_core (
                 if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
                 if (game_restart) begin
                     bird_y_r <= 9'd240; velocity <= 5'sd0; pipe1_x <= 10'd640; pipe2_x <= 10'd960;
-                    pipe1_passed <= 1'b0; pipe2_passed <= 1'b0; grape1_active <= 1'b0; grape2_active <= 1'b0;
+                    pipe1_passed <= 1'b0; pipe2_passed <= 1'b0; grape_active <= 1'b0; 
                     score_tens <= 4'd0; score_ones <= 4'd0; game_over <= 1'b0;
                 end
             end else begin
@@ -125,17 +124,14 @@ module game_core (
                 
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640; pipe1_gap_y <= 8'd50 + rand_y; pipe1_passed <= 1'b0;
-                    grape1_x <= 10'd800; grape1_y <= 10'd50 + {1'b0, rand_y, 1'b0}; grape1_active <= (rand_y < 8'd54); 
+                    grape_x <= 10'd800; grape_y <= 10'd50 + {1'b0, rand_y, 1'b0}; grape_active <= (rand_y < 8'd54); // 30% spawn
                 end else begin 
-                    pipe1_x <= p1_next[9:0]; if (g1_next[10] || eat_g1) grape1_active <= 1'b0; else grape1_x <= g1_next[9:0];
+                    pipe1_x <= p1_next[9:0]; if (g_next[10] || eat_g) grape_active <= 1'b0; else grape_x <= g_next[9:0];
                 end
 
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640; pipe2_gap_y <= 8'd50 + rand_y; pipe2_passed <= 1'b0;
-                    grape2_x <= 10'd800; grape2_y <= 10'd50 + {1'b0, rand_y, 1'b0}; grape2_active <= (rand_y < 8'd54);
-                end else begin
-                    pipe2_x <= p2_next[9:0]; if (g2_next[10] || eat_g2) grape2_active <= 1'b0; else grape2_x <= g2_next[9:0];
-                end
+                end else pipe2_x <= p2_next[9:0];
 
                 if (score_add != 4'd0) begin
                     if (next_ones >= 5'd10) begin score_ones <= next_ones - 5'd10; if (score_tens != 4'd9) score_tens <= score_tens + 4'd1; end 
@@ -172,14 +168,10 @@ module game_core (
     end
     wire bird_hit = (p_color != 3'd0);
 
-    // Grape Graphics Engine
-    wire in_g1 = grape1_active && (x >= grape1_x) && (x < grape1_x + 10'd12) && (y >= grape1_y) && (y < grape1_y + 10'd12);
-    wire in_g2 = grape2_active && (x >= grape2_x) && (x < grape2_x + 10'd12) && (y >= grape2_y) && (y < grape2_y + 10'd12);
-    wire [3:0] gx = in_g1 ? (x[3:0] - grape1_x[3:0]) : (x[3:0] - grape2_x[3:0]);
-    wire [3:0] gy = in_g1 ? (y[3:0] - grape1_y[3:0]) : (y[3:0] - grape2_y[3:0]);
-    wire grape_shape = (in_g1 || in_g2) && !( (gx<2 && gy<2) || (gx>9 && gy<2) || (gx<2 && gy>9) || (gx>9 && gy>9) );
-    wire grape_stem  = (in_g1 || in_g2) && (gy < 2) && (gx == 5 || gx == 6);
-    wire grape_hit   = grape_shape && !grape_stem;
+    // Optimized Grape Graphics (10x10 square + 2x2 stem, zero pixel-subtraction)
+    wire in_g = grape_active && (x >= grape_x) && (x < grape_x + 10'd10) && (y >= grape_y) && (y < grape_y + 10'd10);
+    wire grape_stem  = in_g && (y < grape_y + 10'd3) && (x >= grape_x + 10'd4) && (x < grape_x + 10'd6);
+    wire grape_hit   = in_g && !grape_stem;
 
     wire in_p1x = ({1'b0,x}-{1'b0,pipe1_x} < 11'd48), in_p2x = ({1'b0,x}-{1'b0,pipe2_x} < 11'd48);
     wire pipe_hit = (in_p1x && (y < gap1_10 || (y >= bot_pipe1_y && y < 10'd480))) || (in_p2x && (y < gap2_10 || (y >= bot_pipe2_y && y < 10'd480)));
@@ -215,7 +207,7 @@ module game_core (
     reg audio_active, game_over_last, tens_inc, h_score_beaten; reg [3:0] index, pitch, length; reg [1:0] tick; reg [2:0] step; reg [15:0] tone_count; reg audio_out;
 
     always @(posedge clk) begin if (!rst_n) begin game_over_last <= 1'b0; tens_inc <= 1'b0; end else begin game_over_last <= game_over; tens_inc <= game_tick && !game_over && (p1_pass||p2_pass) && (score_ones==4'd9) && (score_tens!=4'd9); end end
-    wire crash_pulse = game_over & ~game_over_last, score_10_pulse = tens_inc && !game_over, is_new_high = score_gt_high && (score_tens!=0 || score_ones!=0), high_score_pulse = is_new_high && !h_score_beaten && !game_over, eat_g_pulse = game_tick && (eat_g1||eat_g2) && !game_over; 
+    wire crash_pulse = game_over & ~game_over_last, score_10_pulse = tens_inc && !game_over, is_new_high = score_gt_high && (score_tens!=0 || score_ones!=0), high_score_pulse = is_new_high && !h_score_beaten && !game_over, eat_g_pulse = game_tick && eat_g && !game_over; 
     always @(posedge clk) if (!rst_n||game_restart) h_score_beaten<=1'b0; else if (high_score_pulse) h_score_beaten<=1'b1;
 
     always @(*) case (index)
