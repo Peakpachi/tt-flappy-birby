@@ -51,7 +51,7 @@ module game_core (
     output wire       speaker    
 );
 
-    // BIRD is now 32x32. This allows us to use bit-shifting for scaling, 
+    // BIRD is 32x32. This allows us to use bit-shifting for scaling, 
     // saving hundreds of logic gates so the design fits easily!
     localparam [9:0] BIRD_X     = 10'd160; 
     localparam [9:0] BIRD_W     = 10'd32;  
@@ -327,7 +327,7 @@ module game_core (
     wire b_p2_hit = in_p2x && (y >= bot_pipe2_y) && (y < 10'd480);
     wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
 
-    // 8. SCORE Rendering (Proper subtractor mapping so pixels aren't skewed)
+    // 8. SCORE Rendering
     wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
     wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
     wire [9:0] y_rel = y - 10'd32;
@@ -360,43 +360,42 @@ module game_core (
     wire score_hit   = lit && (((score_tens != 4'd0) && in_tens) || in_ones);
     wire h_score_hit = lit && (((h_score_tens != 4'd0) && in_h_tens) || in_h_ones);
 
-    // 9. "RETRY" Text Rendering (Shrunk from "YOU LOST" to save gates)
-    wire [9:0] x_rel_rt = x - 10'd240; 
-    wire [9:0] y_rel_rt = y - 10'd220;
+    // 9. "OOPS!" Text Rendering
+    wire [9:0] x_rel_op = x - 10'd240; 
+    wire [9:0] y_rel_op = y - 10'd220;
     
-    // Only 5 characters long!
-    wire in_rt = (x >= 10'd240) && (x < 10'd400) && (y >= 10'd220) && (y < 10'd260);
+    wire in_op = (x >= 10'd240) && (x < 10'd400) && (y >= 10'd220) && (y < 10'd260);
     
-    wire [2:0] char_idx    = x_rel_rt[7:5];    
-    wire [4:0] char_x      = x_rel_rt[4:0];    
+    wire [2:0] char_idx    = x_rel_op[7:5];    
+    wire [4:0] char_x      = x_rel_op[4:0];    
     wire       in_char     = (char_x < 5'd24);            
-    wire [2:0] char_y_grid = y_rel_rt[5:3]; 
+    wire [2:0] char_y_grid = y_rel_op[5:3]; 
     wire [1:0] char_x_grid = char_x[4:3];   
 
-    reg [14:0] rt_font;
+    reg [14:0] op_font;
     always @(*) begin
         case(char_idx)
-            3'd0: rt_font = 15'b111_101_110_101_101; // R
-            3'd1: rt_font = 15'b111_100_111_100_111; // E
-            3'd2: rt_font = 15'b111_010_010_010_010; // T
-            3'd3: rt_font = 15'b111_101_110_101_101; // R
-            3'd4: rt_font = 15'b101_101_111_010_010; // Y
-            default: rt_font = 15'b0;
+            3'd0: op_font = 15'b111_101_101_101_111; // O
+            3'd1: op_font = 15'b111_101_101_101_111; // O
+            3'd2: op_font = 15'b111_101_111_100_100; // P
+            3'd3: op_font = 15'b111_100_111_001_111; // S
+            3'd4: op_font = 15'b010_010_010_000_010; // !
+            default: op_font = 15'b0;
         endcase
     end
-    reg [2:0] rt_yrow;
+    reg [2:0] op_yrow;
     always @(*) begin
         case (char_y_grid)
-            3'd0: rt_yrow = rt_font[14:12]; 
-            3'd1: rt_yrow = rt_font[11:9]; 
-            3'd2: rt_yrow = rt_font[8:6];
-            3'd3: rt_yrow = rt_font[5:3];   
-            3'd4: rt_yrow = rt_font[2:0];  
-            default: rt_yrow = 3'b000;
+            3'd0: op_yrow = op_font[14:12]; 
+            3'd1: op_yrow = op_font[11:9]; 
+            3'd2: op_yrow = op_font[8:6];
+            3'd3: op_yrow = op_font[5:3];   
+            3'd4: op_yrow = op_font[2:0];  
+            default: op_yrow = 3'b000;
         endcase
     end
-    wire rt_lit = (char_x_grid == 2'd0) ? rt_yrow[2] : (char_x_grid == 2'd1) ? rt_yrow[1] : (char_x_grid == 2'd2) ? rt_yrow[0] : 1'b0;
-    wire draw_rt = game_over && in_rt && in_char && rt_lit;
+    wire op_lit = (char_x_grid == 2'd0) ? op_yrow[2] : (char_x_grid == 2'd1) ? op_yrow[1] : (char_x_grid == 2'd2) ? op_yrow[0] : 1'b0;
+    wire draw_op = game_over && in_op && in_char && op_lit;
 
     reg [5:0] bird_rgb;
     always @(*) begin
@@ -417,7 +416,7 @@ module game_core (
 
     // 10. Colour Palette Pipeline
     assign rgb = !active     ? 6'b00_00_00 :
-                 draw_rt     ? 6'b11_11_11 : 
+                 draw_op     ? 6'b11_11_11 : 
                  score_hit   ? 6'b11_11_11 : 
                  h_score_hit ? 6'b11_10_00 : 
                  bird_hit    ? bird_rgb    : 
@@ -425,13 +424,15 @@ module game_core (
                  game_over   ? 6'b01_00_00 : 
                                bg_color    ; 
 
-    // 11. AUDIO SEQUENCER ENGINE
+    // 11. AUDIO SEQUENCER ENGINE (Clean Quack Arpeggio)
     localparam REST = 4'd0, D4 = 4'd1, Ds4 = 4'd2, E4 = 4'd3, F4 = 4'd4,
-               C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8;
+               C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8, G4 = 4'd11, B4 = 4'd12;
 
     reg         audio_active;
     reg [3:0]   index;   
-    wire last_index = (index == 4'd0) || (index == 4'd2) || (index == 4'd6) || (index == 4'd10);
+    
+    // Stop condition catches the end of our 3-part Quack (Index 2)
+    wire last_index = (index == 4'd2) || (index == 4'd6) || (index == 4'd10);
     reg [3:0]   pitch;
     reg [3:0]   length;
 
@@ -461,17 +462,21 @@ module game_core (
 
     always @(*) begin
         case (index)
-            4'd0: begin pitch = E5; length = 4'd1; end
-            4'd1: begin pitch = C5; length = 4'd2; end
-            4'd2: begin pitch = G5; length = 4'd4; end
-            4'd3: begin pitch = C5; length = 4'd2; end
-            4'd4: begin pitch = E5; length = 4'd2; end
-            4'd5: begin pitch = G5; length = 4'd2; end
-            4'd6: begin pitch = C6; length = 4'd6; end 
-            4'd7: begin pitch = F4;  length = 4'd4; end
+            // THE QUACK: A clean, low-throaty rapid sweep (No static!)
+            4'd0: begin pitch = B4;  length = 4'd1; end 
+            4'd1: begin pitch = G4;  length = 4'd1; end 
+            4'd2: begin pitch = D4;  length = 4'd2; end 
+            
+            4'd3: begin pitch = C5;  length = 4'd2; end // High Score
+            4'd4: begin pitch = E5;  length = 4'd2; end
+            4'd5: begin pitch = G5;  length = 4'd2; end
+            
+            4'd6: begin pitch = C6;  length = 4'd6; end // +10 Points
+            
+            4'd7: begin pitch = F4;  length = 4'd4; end // Crash
             4'd8: begin pitch = E4;  length = 4'd4; end
             4'd9: begin pitch = Ds4; length = 4'd4; end
-            4'd10: begin pitch = D4;  length = 4'd8; end
+            4'd10: begin pitch = D4; length = 4'd8; end
             default: begin pitch = REST; length = 4'd1; end
         endcase
     end
@@ -483,6 +488,8 @@ module game_core (
             Ds4: hp_m1 = 16'd40191;
             E4:  hp_m1 = 16'd37992;
             F4:  hp_m1 = 16'd35815;
+            G4:  hp_m1 = 16'd32110; // NEW: Low Mid
+            B4:  hp_m1 = 16'd25486; // NEW: High Mid
             C5:  hp_m1 = 16'd23899;
             E5:  hp_m1 = 16'd18967;
             G5:  hp_m1 = 16'd15942;
@@ -532,7 +539,8 @@ module game_core (
         if (!rst_n || pitch == REST || !audio_active) begin
             tone_count <= 16'd0; audio_out <= 1'b0;
         end else if (tone_count == 16'd0) begin
-            tone_count <= hp_m1; audio_out <= ~audio_out;
+            tone_count <= hp_m1; 
+            audio_out <= ~audio_out;
         end else begin
             tone_count <= tone_count - 16'd1;
         end
@@ -544,7 +552,7 @@ module game_core (
     wire _unused_bits = &{
         1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], 
         bx_full[1:0], by_full[1:0], 
-        x_rel_rt[9:8], y_rel_rt[9:6], y_rel_rt[2:0]
+        x_rel_op[9:8], y_rel_op[9:6], y_rel_op[2:0]
     };
 
 endmodule
