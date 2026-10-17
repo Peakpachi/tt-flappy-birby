@@ -49,7 +49,6 @@ module game_core (
     output wire       speaker    
 );
 
-    localparam [9:0] BIRD_X = 10'd160, BIRD_W = 10'd24, BIRD_H = 10'd24, PIPE_W = 10'd48, GAP_H = 10'd130; 
     localparam signed [4:0] JUMP_VEL = -5'sd8, GRAVITY = 5'sd1;
 
     // 1. Frame Throttle (15% Speed Reduction)
@@ -90,12 +89,12 @@ module game_core (
     wire [9:0] pipe_speed = 10'd3 + {6'd0, score_tens};
     wire [10:0] p1_next = {1'b0, pipe1_x} - {1'b0, pipe_speed}, p2_next = {1'b0, pipe2_x} - {1'b0, pipe_speed};
     wire [10:0] g_next = {1'b0, grape_x} - {1'b0, pipe_speed};
-    wire p1_pass = !pipe1_passed && (pipe1_x < BIRD_X - PIPE_W), p2_pass = !pipe2_passed && (pipe2_x < BIRD_X - PIPE_W);
+    wire p1_pass = !pipe1_passed && (pipe1_x < 10'd112), p2_pass = !pipe2_passed && (pipe2_x < 10'd112); // BIRD_X(160) - 48 = 112
     wire score_gt_high = (score_tens > h_score_tens) || ((score_tens == h_score_tens) && (score_ones > h_score_ones));
-    wire game_restart = game_over && (bird_y >= 10'd480 - BIRD_H) && jump_pending;
+    wire game_restart = game_over && (bird_y >= 10'd456) && jump_pending;
 
-    // Grape Hit logic (AABB) & Scoring Math (Optimized for 1 grape)
-    wire eat_g = grape_active && (grape_x < BIRD_X + BIRD_W) && (grape_x + 10'd10 > BIRD_X) && (grape_y < bird_y + BIRD_H) && (grape_y + 10'd10 > bird_y);
+    // Grape Hit logic (AABB) & Scoring Math (Optimized, no subtractors)
+    wire eat_g = grape_active && (grape_x < 10'd184) && (grape_x + 10'd10 > 10'd160) && (grape_y < bird_y + 10'd24) && (grape_y + 10'd10 > bird_y);
     wire [3:0] score_add = ((p1_pass || p2_pass) ? 4'd1 : 4'd0) + (eat_g ? 4'd2 : 4'd0);
     wire [4:0] next_ones = score_ones + score_add;
 
@@ -107,12 +106,12 @@ module game_core (
             grape_active <= 1'b0; score_tens <= 4'd0; score_ones <= 4'd0;
             h_score_tens <= 4'd0; h_score_ones <= 4'd0; game_over <= 1'b0;
         end else if (game_tick) begin
-            if (crash1 || crash2 || (bird_y >= 10'd480 - BIRD_H)) game_over <= 1'b1;
+            if (crash1 || crash2 || (bird_y >= 10'd456)) game_over <= 1'b1;
             if (score_gt_high) begin h_score_tens <= score_tens; h_score_ones <= score_ones; end
 
             if (game_over) begin
                 if (velocity < 5'sd15) velocity <= velocity + GRAVITY;
-                if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
+                if (next_y > 10'd456) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
                 if (game_restart) begin
                     bird_y_r <= 9'd240; velocity <= 5'sd0; pipe1_x <= 10'd640; pipe2_x <= 10'd960;
                     pipe1_passed <= 1'b0; pipe2_passed <= 1'b0; grape_active <= 1'b0; 
@@ -120,7 +119,7 @@ module game_core (
                 end
             end else begin
                 if (jump_pending) velocity <= JUMP_VEL; else if (velocity < 5'sd15) velocity <= velocity + GRAVITY;
-                if (next_y < 0) bird_y_r <= 9'd0; else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
+                if (next_y < 0) bird_y_r <= 9'd0; else if (next_y > 10'd456) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
                 
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640; pipe1_gap_y <= 8'd50 + rand_y; pipe1_passed <= 1'b0;
@@ -144,14 +143,20 @@ module game_core (
 
     // 6. Collision & Rendering Logic
     wire [9:0] gap1_10 = {2'b00, pipe1_gap_y}, gap2_10 = {2'b00, pipe2_gap_y};
-    wire [9:0] bot_pipe1_y = gap1_10 + GAP_H, bot_pipe2_y = gap2_10 + GAP_H;
-    wire crash1 = (pipe1_x < BIRD_X + BIRD_W) && (pipe1_x > BIRD_X - PIPE_W) && ((bird_y < gap1_10) || (bird_y + BIRD_H > bot_pipe1_y));
-    wire crash2 = (pipe2_x < BIRD_X + BIRD_W) && (pipe2_x > BIRD_X - PIPE_W) && ((bird_y < gap2_10) || (bird_y + BIRD_H > bot_pipe2_y));
+    wire [9:0] bot_pipe1_y = gap1_10 + 10'd130, bot_pipe2_y = gap2_10 + 10'd130;
+    wire crash1 = (pipe1_x < 10'd184) && (pipe1_x + 10'd48 > 10'd160) && ((bird_y < gap1_10) || (bird_y + 10'd24 > bot_pipe1_y));
+    wire crash2 = (pipe2_x < 10'd184) && (pipe2_x + 10'd48 > 10'd160) && ((bird_y < gap2_10) || (bird_y + 10'd24 > bot_pipe2_y));
 
+    // HARDWARE OPTIMIZATION: BIRD_X is 160 (multiple of 32). x-160 for the 24px box is simply x[4:0]! No subtractor needed!
     wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
-    wire in_bird_box = (x >= BIRD_X) && (x < BIRD_X + BIRD_W) && (by_d < {1'b0, BIRD_H});
-    wire [4:0] bx_div = (x - BIRD_X) / 5'd3, by_div = by_d[9:0] / 5'd3;
-    wire [2:0] bx = bx_div[2:0], by = by_div[2:0]; reg [2:0] p_color;
+    wire in_bird_box = (x >= 10'd160) && (x < 10'd184) && (by_d < 11'd24);
+    
+    // Hardware LUT replaces the massive division-by-3 multiplier arrays
+    wire [4:0] bx_diff = x[4:0]; 
+    wire [4:0] by_diff = by_d[4:0];
+    wire [2:0] bx = (bx_diff < 5'd3) ? 3'd0 : (bx_diff < 5'd6) ? 3'd1 : (bx_diff < 5'd9) ? 3'd2 : (bx_diff < 5'd12) ? 3'd3 : (bx_diff < 5'd15) ? 3'd4 : (bx_diff < 5'd18) ? 3'd5 : (bx_diff < 5'd21) ? 3'd6 : 3'd7;
+    wire [2:0] by = (by_diff < 5'd3) ? 3'd0 : (by_diff < 5'd6) ? 3'd1 : (by_diff < 5'd9) ? 3'd2 : (by_diff < 5'd12) ? 3'd3 : (by_diff < 5'd15) ? 3'd4 : (by_diff < 5'd18) ? 3'd5 : (by_diff < 5'd21) ? 3'd6 : 3'd7;
+    reg [2:0] p_color;
 
     always @(*) begin // Ducky Sprite
         p_color = 3'd0; 
@@ -168,12 +173,15 @@ module game_core (
     end
     wire bird_hit = (p_color != 3'd0);
 
-    // Optimized Grape Graphics (10x10 square + 2x2 stem, zero pixel-subtraction)
-    wire in_g = grape_active && (x >= grape_x) && (x < grape_x + 10'd10) && (y >= grape_y) && (y < grape_y + 10'd10);
-    wire grape_stem  = in_g && (y < grape_y + 10'd3) && (x >= grape_x + 10'd4) && (x < grape_x + 10'd6);
+    // Optimized Grape Graphics (10x10 square + 2x2 stem, highly optimized bounding box adders)
+    wire [9:0] gx_end = grape_x + 10'd10, gy_end = grape_y + 10'd10;
+    wire in_g = grape_active && (x >= grape_x) && (x < gx_end) && (y >= grape_y) && (y < gy_end);
+    wire [3:0] gx_diff = x[3:0] - grape_x[3:0], gy_diff = y[3:0] - grape_y[3:0]; // local 4-bit space
+    wire grape_stem  = in_g && (gy_diff < 4'd2) && (gx_diff >= 4'd4) && (gx_diff <= 4'd5);
     wire grape_hit   = in_g && !grape_stem;
 
-    wire in_p1x = ({1'b0,x}-{1'b0,pipe1_x} < 11'd48), in_p2x = ({1'b0,x}-{1'b0,pipe2_x} < 11'd48);
+    wire [9:0] p1_end = pipe1_x + 10'd48, p2_end = pipe2_x + 10'd48;
+    wire in_p1x = (x >= pipe1_x) && (x < p1_end), in_p2x = (x >= pipe2_x) && (x < p2_end);
     wire pipe_hit = (in_p1x && (y < gap1_10 || (y >= bot_pipe1_y && y < 10'd480))) || (in_p2x && (y < gap2_10 || (y >= bot_pipe2_y && y < 10'd480)));
 
     // Score & Text Render
@@ -233,6 +241,6 @@ module game_core (
     end
     always @(posedge clk) begin if (!rst_n||pitch==REST||!audio_active) begin tone_count<=16'd0; audio_out<=1'b0; end else if (tone_count==16'd0) begin tone_count<=hp_m1; audio_out<=~audio_out; end else tone_count<=tone_count-16'd1; end
     assign speaker = audio_out & ~({1'b0,step}==length-4'd1 && tick==2'd2) & audio_active;
-    wire _unused = &{1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], bx_div[4:3], by_div[4:3], x_rel_yl[9:8], y_rel_yl[9:6], y_rel_yl[2:0]};
+    wire _unused = &{1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], x_rel_yl[9:8], y_rel_yl[9:6], y_rel_yl[2:0], by_d[10:5]};
 
 endmodule
