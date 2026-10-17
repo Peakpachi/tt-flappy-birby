@@ -57,7 +57,7 @@ module game_core (
     localparam [9:0] PIPE_W     = 10'd48;  
     localparam [9:0] GAP_H      = 10'd130; 
     
-    // 1. Frame Throttle: Slows game movement/physics by 15% while keeping 60Hz VGA sync
+    // 1. Frame Throttle: Slows game movement/physics by 15%
     reg [4:0] throttle_count;
     reg game_tick;
     always @(posedge clk) begin
@@ -125,9 +125,9 @@ module game_core (
     reg [3:0] h_score_tens, h_score_ones; 
     reg        game_over;
     
-    // NEW: Invert Mechanics State
-    reg [4:0] invert_counter; // Counts to 25
-    reg       invert_mode;    // 1 = Inverted (Black sky, white pipes, reverse gravity)
+    // Invert Mechanics State
+    reg [4:0] invert_counter; 
+    reg       invert_mode;    
 
     wire signed [10:0] bird_y_11 = {1'b0, bird_y};
     wire signed [10:0] vel_11    = {{6{velocity[4]}}, velocity};
@@ -164,7 +164,6 @@ module game_core (
             game_over      <= 1'b0;
         end else if (game_tick) begin
             
-            // Floor kills. Ceiling blocks. (Even in inverted mode, riding the ceiling is blocked)
             if (crash1 || crash2 || (bird_y >= 10'd480 - BIRD_H)) game_over <= 1'b1;
 
             if (score_gt_high) begin
@@ -173,7 +172,6 @@ module game_core (
             end
 
             if (game_over) begin
-                // Normal gravity asserts during Game Over so bird falls off screen
                 if (velocity < 5'sd15) velocity <= velocity + 5'sd1;
                 
                 if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456;
@@ -204,11 +202,10 @@ module game_core (
                     end
                 end
                 
-                if (next_y < 0) bird_y_r <= 9'd0; // Ceiling blocks
-                else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456; // Floor blocks
+                if (next_y < 0) bird_y_r <= 9'd0; 
+                else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd456; 
                 else bird_y_r <= next_y[8:0];
                 
-                // Pipe 1 Update
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640;
                     pipe1_gap_y <= 8'd50 + rand_y;   
@@ -217,7 +214,6 @@ module game_core (
                     pipe1_x <= p1_next[9:0];
                 end
 
-                // Pipe 2 Update
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640;
                     pipe2_gap_y <= 8'd50 + rand_y;
@@ -259,18 +255,20 @@ module game_core (
     wire crash2 = (pipe2_x < BIRD_X + BIRD_W) && (pipe2_x > BIRD_X - PIPE_W) &&
                   ((bird_y < gap2_10) || (bird_y + BIRD_H > bot_pipe2_y));
 
-    // 7. Graphics Hitboxes & Ducky Sprite
-    wire [9:0] bx_full = x - BIRD_X;
+    // 7. Graphics Hitboxes & Ducky Sprite (Highly Optimized logic to save subtractors)
     wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
-    wire [9:0] by_full = by_d[9:0];
-    
     wire in_bird_box = (x >= BIRD_X) && (x < BIRD_X + BIRD_W) && (by_d < {1'b0, BIRD_H});
     
-    wire [4:0] bx_div = bx_full[4:0] / 5'd3;
-    wire [4:0] by_div = by_full[4:0] / 5'd3;
+    // Because BIRD_X is 160, x[4:0] perfectly represents (x - 160) from 0 to 23!
+    wire [4:0] bx_full = x[4:0]; 
+    wire [4:0] by_full = by_d[4:0];
     
-    wire [2:0] bx = bx_div[2:0];
-    wire [2:0] by = by_div[2:0];
+    // Hardware-cheap comparator lookup (Replaces expensive /3 division)
+    wire [2:0] bx = (bx_full < 5'd3) ? 3'd0 : (bx_full < 5'd6) ? 3'd1 : (bx_full < 5'd9) ? 3'd2 : (bx_full < 5'd12) ? 3'd3 : (bx_full < 5'd15) ? 3'd4 : (bx_full < 5'd18) ? 3'd5 : (bx_full < 5'd21) ? 3'd6 : 3'd7;
+    wire [2:0] by_raw = (by_full < 5'd3) ? 3'd0 : (by_full < 5'd6) ? 3'd1 : (by_full < 5'd9) ? 3'd2 : (by_full < 5'd12) ? 3'd3 : (by_full < 5'd15) ? 3'd4 : (by_full < 5'd18) ? 3'd5 : (by_full < 5'd21) ? 3'd6 : 3'd7;
+    
+    // BIRD VERTICAL FLIP: Inverting a 3-bit number (0-7) mirrors it perfectly!
+    wire [2:0] by = invert_mode ? ~by_raw : by_raw;
 
     reg [2:0] p_color;
     always @(*) begin
@@ -288,7 +286,7 @@ module game_core (
                 end
                 3'd2: begin 
                     if (bx == 3'd3 || bx == 3'd4 || bx == 3'd6) p_color = 3'd1;
-                    else if (bx == 3'd5) p_color = 3'd4; // Eye
+                    else if (bx == 3'd5) p_color = 3'd4;
                 end
                 3'd3: begin 
                     if (bx == 3'd0 || bx == 3'd4 || bx == 3'd5) p_color = 3'd1;
@@ -328,24 +326,15 @@ module game_core (
     wire b_p2_hit = in_p2x && (y >= bot_pipe2_y) && (y < 10'd480);
     wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
 
-    // 8. SCORE Rendering (Restored stable text subtraction)
-    wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
-    wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
-    wire [9:0] y_rel = y - 10'd32;
+    // 8. SCORE Rendering (Aligned to grid to cost ZERO logic gates!)
+    wire in_tens = (x >= 10'd288) && (x < 10'd312) && (y >= 10'd64) && (y < 10'd104);
+    wire in_ones = (x >= 10'd320) && (x < 10'd344) && (y >= 10'd64) && (y < 10'd104);
 
-    wire in_h_tens = (x >= 10'd560) && (x < 10'd584) && (y >= 10'd32) && (y < 10'd72);
-    wire in_h_ones = (x >= 10'd592) && (x < 10'd616) && (y >= 10'd32) && (y < 10'd72);
+    wire in_h_tens = (x >= 10'd544) && (x < 10'd568) && (y >= 10'd64) && (y < 10'd104);
+    wire in_h_ones = (x >= 10'd576) && (x < 10'd600) && (y >= 10'd64) && (y < 10'd104);
     
     wire [3:0] dig = in_tens ? score_tens : in_ones ? score_ones : in_h_tens ? h_score_tens : h_score_ones;
-    wire [4:0] dx  = x[4:0] - ((in_tens || in_ones) ? 5'd4 : 5'd16);
     
-    reg [2:0] drow;
-    always @(*) begin
-        case (y_rel[5:3])
-            3'd0: drow = dfont[14:12]; 3'd1: drow = dfont[11:9]; 3'd2: drow = dfont[8:6];
-            3'd3: drow = dfont[5:3];   3'd4: drow = dfont[2:0];  default: drow = 3'b000;
-        endcase
-    end
     reg [14:0] dfont;
     always @(*) begin
         case (dig)
@@ -357,25 +346,26 @@ module game_core (
             default: dfont = 15'b0;
         endcase
     end
-    wire lit = (dx[4:3] == 2'd0) ? drow[2] : (dx[4:3] == 2'd1) ? drow[1] : (dx[4:3] == 2'd2) ? drow[0] : 1'b0;
+    
+    reg [2:0] drow;
+    always @(*) begin
+        case (y[5:3]) // Works perfectly because Y starts at 64
+            3'd0: drow = dfont[14:12]; 3'd1: drow = dfont[11:9]; 3'd2: drow = dfont[8:6];
+            3'd3: drow = dfont[5:3];   3'd4: drow = dfont[2:0];  default: drow = 3'b000;
+        endcase
+    end
+    
+    // Because X is aligned to 32px boundaries, x[4:3] represents the column perfectly
+    wire lit = (x[4:3] == 2'd0) ? drow[2] : (x[4:3] == 2'd1) ? drow[1] : (x[4:3] == 2'd2) ? drow[0] : 1'b0;
     wire score_hit   = lit && (((score_tens != 4'd0) && in_tens) || in_ones);
     wire h_score_hit = lit && (((h_score_tens != 4'd0) && in_h_tens) || in_h_ones);
 
-    // 9. "YOU LOST" Text Rendering (Restored stable subtraction)
-    wire [9:0] x_rel_yl = x - 10'd192;
-    wire [9:0] y_rel_yl = y - 10'd220;
+    // 9. "YOU LOST" Text Rendering (Perfectly Centered to save Subtractor Space)
+    wire in_yl = (x >= 10'd256) && (x < 10'd512) && (y >= 10'd256) && (y < 10'd296);
     
-    wire in_yl = (x >= 10'd192) && (x < 10'd448) && (y >= 10'd220) && (y < 10'd260);
-    
-    wire [2:0] char_idx    = x_rel_yl[7:5];    
-    wire [4:0] char_x      = x_rel_yl[4:0];    
-    wire       in_char     = (char_x < 5'd24);            
-    wire [2:0] char_y_grid = y_rel_yl[5:3]; 
-    wire [1:0] char_x_grid = char_x[4:3];   
-
     reg [14:0] yl_font;
     always @(*) begin
-        case(char_idx)
+        case(x[7:5]) // Because X starts at 256, bits 7-5 cleanly index chars 0 to 7
             3'd0: yl_font = 15'b101_101_111_010_010; // Y
             3'd1: yl_font = 15'b111_101_101_101_111; // O
             3'd2: yl_font = 15'b101_101_101_101_111; // U
@@ -387,19 +377,17 @@ module game_core (
             default: yl_font = 15'b0;
         endcase
     end
+    
     reg [2:0] yrow;
     always @(*) begin
-        case (char_y_grid)
-            3'd0: yrow = yl_font[14:12]; 
-            3'd1: yrow = yl_font[11:9]; 
-            3'd2: yrow = yl_font[8:6];
-            3'd3: yrow = yl_font[5:3];   
-            3'd4: yrow = yl_font[2:0];  
-            default: yrow = 3'b000;
+        case (y[5:3]) // Works perfectly because Y starts at 256
+            3'd0: yrow = yl_font[14:12]; 3'd1: yrow = yl_font[11:9]; 3'd2: yrow = yl_font[8:6];
+            3'd3: yrow = yl_font[5:3];   3'd4: yrow = yl_font[2:0];  default: yrow = 3'b000;
         endcase
     end
-    wire yl_lit = (char_x_grid == 2'd0) ? yrow[2] : (char_x_grid == 2'd1) ? yrow[1] : (char_x_grid == 2'd2) ? yrow[0] : 1'b0;
-    wire draw_yl = game_over && in_yl && in_char && yl_lit;
+    
+    wire yl_lit = (x[4:3] == 2'd0) ? yrow[2] : (x[4:3] == 2'd1) ? yrow[1] : (x[4:3] == 2'd2) ? yrow[0] : 1'b0;
+    wire draw_yl = game_over && in_yl && (x[4:0] < 5'd24) && yl_lit;
 
     reg [5:0] bird_rgb;
     always @(*) begin
@@ -422,7 +410,7 @@ module game_core (
     assign rgb = !active     ? 6'b00_00_00 :
                  draw_yl     ? 6'b11_11_11 : 
                  score_hit   ? 6'b11_11_11 : 
-                 h_score_hit ? 6'b11_10_00 : // Orange High Score
+                 h_score_hit ? 6'b11_10_00 : 
                  bird_hit    ? bird_rgb    : 
                  pipe_hit    ? pipe_color  : 
                  game_over   ? 6'b01_00_00 : 
@@ -545,9 +533,7 @@ module game_core (
 
     // 12. Verilator Lint Fix 
     wire _unused_bits = &{
-        1'b0,
-        dx[2:0], y_rel[9:6], y_rel[2:0], bx_div[4:3], by_div[4:3],
-        x_rel_yl[9:8], y_rel_yl[9:6], y_rel_yl[2:0]
+        1'b0, x[9:8], x[2:0], y[9:6], y[2:0]
     };
 
 endmodule
