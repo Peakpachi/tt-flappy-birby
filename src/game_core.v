@@ -89,12 +89,13 @@ module game_core (
     wire [9:0] pipe_speed = 10'd3 + {6'd0, score_tens};
     wire [10:0] p1_next = {1'b0, pipe1_x} - {1'b0, pipe_speed}, p2_next = {1'b0, pipe2_x} - {1'b0, pipe_speed};
     wire [10:0] g_next = {1'b0, grape_x} - {1'b0, pipe_speed};
-    wire p1_pass = !pipe1_passed && (pipe1_x < 10'd112), p2_pass = !pipe2_passed && (pipe2_x < 10'd112); // BIRD_X(160) - 48 = 112
+    wire p1_pass = !pipe1_passed && (pipe1_x < 10'd112); // BIRD_X(160) - PIPE_W(48) = 112
+    wire p2_pass = !pipe2_passed && (pipe2_x < 10'd112);
     wire score_gt_high = (score_tens > h_score_tens) || ((score_tens == h_score_tens) && (score_ones > h_score_ones));
-    wire game_restart = game_over && (bird_y >= 10'd456) && jump_pending;
+    wire game_restart = game_over && (bird_y >= 10'd448) && jump_pending;
 
-    // Grape Hit logic (AABB) & Scoring Math (Optimized, no subtractors)
-    wire eat_g = grape_active && (grape_x < 10'd184) && (grape_x + 10'd10 > 10'd160) && (grape_y < bird_y + 10'd24) && (grape_y + 10'd10 > bird_y);
+    // Grape Hit logic (AABB) & Scoring Math
+    wire eat_g = grape_active && (grape_x < 10'd192) && (grape_x + 10'd10 > 10'd160) && (grape_y < bird_y + 10'd32) && (grape_y + 10'd10 > bird_y);
     wire [3:0] score_add = ((p1_pass || p2_pass) ? 4'd1 : 4'd0) + (eat_g ? 4'd2 : 4'd0);
     wire [4:0] next_ones = score_ones + score_add;
 
@@ -106,12 +107,12 @@ module game_core (
             grape_active <= 1'b0; score_tens <= 4'd0; score_ones <= 4'd0;
             h_score_tens <= 4'd0; h_score_ones <= 4'd0; game_over <= 1'b0;
         end else if (game_tick) begin
-            if (crash1 || crash2 || (bird_y >= 10'd456)) game_over <= 1'b1;
+            if (crash1 || crash2 || (bird_y >= 10'd448)) game_over <= 1'b1;
             if (score_gt_high) begin h_score_tens <= score_tens; h_score_ones <= score_ones; end
 
             if (game_over) begin
                 if (velocity < 5'sd15) velocity <= velocity + GRAVITY;
-                if (next_y > 10'd456) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
+                if (next_y > 10'd448) bird_y_r <= 9'd448; else bird_y_r <= next_y[8:0];
                 if (game_restart) begin
                     bird_y_r <= 9'd240; velocity <= 5'sd0; pipe1_x <= 10'd640; pipe2_x <= 10'd960;
                     pipe1_passed <= 1'b0; pipe2_passed <= 1'b0; grape_active <= 1'b0; 
@@ -119,7 +120,7 @@ module game_core (
                 end
             end else begin
                 if (jump_pending) velocity <= JUMP_VEL; else if (velocity < 5'sd15) velocity <= velocity + GRAVITY;
-                if (next_y < 0) bird_y_r <= 9'd0; else if (next_y > 10'd456) bird_y_r <= 9'd456; else bird_y_r <= next_y[8:0];
+                if (next_y < 0) bird_y_r <= 9'd0; else if (next_y > 10'd448) bird_y_r <= 9'd448; else bird_y_r <= next_y[8:0];
                 
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640; pipe1_gap_y <= 8'd50 + rand_y; pipe1_passed <= 1'b0;
@@ -144,21 +145,19 @@ module game_core (
     // 6. Collision & Rendering Logic
     wire [9:0] gap1_10 = {2'b00, pipe1_gap_y}, gap2_10 = {2'b00, pipe2_gap_y};
     wire [9:0] bot_pipe1_y = gap1_10 + 10'd130, bot_pipe2_y = gap2_10 + 10'd130;
-    wire crash1 = (pipe1_x < 10'd184) && (pipe1_x + 10'd48 > 10'd160) && ((bird_y < gap1_10) || (bird_y + 10'd24 > bot_pipe1_y));
-    wire crash2 = (pipe2_x < 10'd184) && (pipe2_x + 10'd48 > 10'd160) && ((bird_y < gap2_10) || (bird_y + 10'd24 > bot_pipe2_y));
-
-    // HARDWARE OPTIMIZATION: BIRD_X is 160 (multiple of 32). x-160 for the 24px box is simply x[4:0]! No subtractor needed!
-    wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
-    wire in_bird_box = (x >= 10'd160) && (x < 10'd184) && (by_d < 11'd24);
     
-    // Hardware LUT replaces the massive division-by-3 multiplier arrays
-    wire [4:0] bx_diff = x[4:0]; 
-    wire [4:0] by_diff = by_d[4:0];
-    wire [2:0] bx = (bx_diff < 5'd3) ? 3'd0 : (bx_diff < 5'd6) ? 3'd1 : (bx_diff < 5'd9) ? 3'd2 : (bx_diff < 5'd12) ? 3'd3 : (bx_diff < 5'd15) ? 3'd4 : (bx_diff < 5'd18) ? 3'd5 : (bx_diff < 5'd21) ? 3'd6 : 3'd7;
-    wire [2:0] by = (by_diff < 5'd3) ? 3'd0 : (by_diff < 5'd6) ? 3'd1 : (by_diff < 5'd9) ? 3'd2 : (by_diff < 5'd12) ? 3'd3 : (by_diff < 5'd15) ? 3'd4 : (by_diff < 5'd18) ? 3'd5 : (by_diff < 5'd21) ? 3'd6 : 3'd7;
+    // Ducky size increased to 32x32 for logic optimization (160 + 32 = 192)
+    wire crash1 = (pipe1_x < 10'd192) && (pipe1_x + 10'd48 > 10'd160) && ((bird_y < gap1_10) || (bird_y + 10'd32 > bot_pipe1_y));
+    wire crash2 = (pipe2_x < 10'd192) && (pipe2_x + 10'd48 > 10'd160) && ((bird_y < gap2_10) || (bird_y + 10'd32 > bot_pipe2_y));
+
+    // ZERO MATH BIRD SCALING: Since Bird_X = 160 (multiple of 32), x[4:0] IS exactly (x - 160)!
+    wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
+    wire in_bird_box = (x >= 10'd160) && (x < 10'd192) && (by_d < 11'd32);
+    wire [2:0] bx = x[4:2];         // Bit-shift division by 4
+    wire [2:0] by = by_d[4:2];      // Bit-shift division by 4
     reg [2:0] p_color;
 
-    always @(*) begin // Ducky Sprite
+    always @(*) begin // Ducky Sprite 
         p_color = 3'd0; 
         if (in_bird_box) case (by)
             3'd0: if (bx==3'd4) p_color=3'd1; else if (bx==3'd5) p_color=3'd2;
@@ -173,10 +172,10 @@ module game_core (
     end
     wire bird_hit = (p_color != 3'd0);
 
-    // Optimized Grape Graphics (10x10 square + 2x2 stem, highly optimized bounding box adders)
+    // Grape Graphics (10x10 square + 2x2 stem, highly optimized 4-bit subtraction bounds)
     wire [9:0] gx_end = grape_x + 10'd10, gy_end = grape_y + 10'd10;
     wire in_g = grape_active && (x >= grape_x) && (x < gx_end) && (y >= grape_y) && (y < gy_end);
-    wire [3:0] gx_diff = x[3:0] - grape_x[3:0], gy_diff = y[3:0] - grape_y[3:0]; // local 4-bit space
+    wire [3:0] gx_diff = x[3:0] - grape_x[3:0], gy_diff = y[3:0] - grape_y[3:0]; 
     wire grape_stem  = in_g && (gy_diff < 4'd2) && (gx_diff >= 4'd4) && (gx_diff <= 4'd5);
     wire grape_hit   = in_g && !grape_stem;
 
@@ -184,26 +183,30 @@ module game_core (
     wire in_p1x = (x >= pipe1_x) && (x < p1_end), in_p2x = (x >= pipe2_x) && (x < p2_end);
     wire pipe_hit = (in_p1x && (y < gap1_10 || (y >= bot_pipe1_y && y < 10'd480))) || (in_p2x && (y < gap2_10 || (y >= bot_pipe2_y && y < 10'd480)));
 
-    // Score & Text Render
-    wire in_tens = (x>=10'd292 && x<10'd316 && y>=10'd32 && y<10'd72), in_ones = (x>=10'd324 && x<10'd348 && y>=10'd32 && y<10'd72);
-    wire in_h_tens = (x>=10'd560 && x<10'd584 && y>=10'd32 && y<10'd72), in_h_ones = (x>=10'd592 && x<10'd616 && y>=10'd32 && y<10'd72);
+    // ALIGNED SCORE RENDER (Zero logic subtractors! dx = x[4:0] automatically)
+    wire in_tens = (x>=10'd288 && x<10'd312 && y>=10'd64 && y<10'd104);
+    wire in_ones = (x>=10'd320 && x<10'd344 && y>=10'd64 && y<10'd104);
+    wire in_h_tens = (x>=10'd544 && x<10'd568 && y>=10'd64 && y<10'd104);
+    wire in_h_ones = (x>=10'd576 && x<10'd600 && y>=10'd64 && y<10'd104);
+    
     wire [3:0] dig = in_tens ? score_tens : in_ones ? score_ones : in_h_tens ? h_score_tens : h_score_ones;
-    wire [4:0] dx = x[4:0] - ((in_tens||in_ones)?5'd4:5'd16); wire [9:0] y_rel = y - 10'd32; reg [14:0] dfont;
+    reg [14:0] dfont;
     always @(*) case (dig)
         4'd0: dfont=15'b111_101_101_101_111; 4'd1: dfont=15'b010_110_010_010_111; 4'd2: dfont=15'b111_001_111_100_111;
         4'd3: dfont=15'b111_001_111_001_111; 4'd4: dfont=15'b101_101_111_001_001; 4'd5: dfont=15'b111_100_111_001_111;
         4'd6: dfont=15'b111_100_111_101_111; 4'd7: dfont=15'b111_001_001_001_001; 4'd8: dfont=15'b111_101_111_101_111;
         4'd9: dfont=15'b111_101_111_001_111; default: dfont=15'b0;
     endcase
-    reg [2:0] drow; always @(*) case(y_rel[5:3]) 3'd0: drow=dfont[14:12]; 3'd1: drow=dfont[11:9]; 3'd2: drow=dfont[8:6]; 3'd3: drow=dfont[5:3]; 3'd4: drow=dfont[2:0]; default: drow=3'd0; endcase
-    wire lit = (dx[4:3]==2'd0)?drow[2]:(dx[4:3]==2'd1)?drow[1]:(dx[4:3]==2'd2)?drow[0]:1'b0;
+    reg [2:0] drow; always @(*) case(y[5:3]) 3'd0: drow=dfont[14:12]; 3'd1: drow=dfont[11:9]; 3'd2: drow=dfont[8:6]; 3'd3: drow=dfont[5:3]; 3'd4: drow=dfont[2:0]; default: drow=3'd0; endcase
+    wire lit = (x[4:3]==2'd0)?drow[2]:(x[4:3]==2'd1)?drow[1]:(x[4:3]==2'd2)?drow[0]:1'b0;
     wire score_hit = lit && (((score_tens!=4'd0)&&in_tens)||in_ones), h_score_hit = lit && (((h_score_tens!=4'd0)&&in_h_tens)||in_h_ones);
 
-    wire [9:0] x_rel_yl = x - 10'd192, y_rel_yl = y - 10'd220; reg [14:0] yl_font;
-    wire in_yl = (x>=10'd192 && x<10'd448 && y>=10'd220 && y<10'd260); wire [4:0] char_x = x_rel_yl[4:0];
-    always @(*) case(x_rel_yl[7:5]) 3'd0: yl_font=15'b101_101_111_010_010; 3'd1: yl_font=15'b111_101_101_101_111; 3'd2: yl_font=15'b101_101_101_101_111; 3'd3: yl_font=15'b0; 3'd4: yl_font=15'b100_100_100_100_111; 3'd5: yl_font=15'b111_101_101_101_111; 3'd6: yl_font=15'b111_100_111_001_111; 3'd7: yl_font=15'b111_010_010_010_010; default: yl_font=15'b0; endcase
-    reg [2:0] yrow; always @(*) case(y_rel_yl[5:3]) 3'd0: yrow=yl_font[14:12]; 3'd1: yrow=yl_font[11:9]; 3'd2: yrow=yl_font[8:6]; 3'd3: yrow=yl_font[5:3]; 3'd4: yrow=yl_font[2:0]; default: yrow=3'b0; endcase
-    wire draw_yl = game_over && in_yl && (char_x < 5'd24) && ((char_x[4:3]==2'd0)?yrow[2]:(char_x[4:3]==2'd1)?yrow[1]:(char_x[4:3]==2'd2)?yrow[0]:1'b0);
+    // ALIGNED "YOU LOST" RENDER (Centered at X:256, Y:256. x[7:5] replaces massive subtractor tree)
+    wire in_yl = (x>=10'd256 && x<10'd512 && y>=10'd256 && y<10'd296); 
+    reg [14:0] yl_font;
+    always @(*) case(x[7:5]) 3'd0: yl_font=15'b101_101_111_010_010; 3'd1: yl_font=15'b111_101_101_101_111; 3'd2: yl_font=15'b101_101_101_101_111; 3'd3: yl_font=15'b0; 3'd4: yl_font=15'b100_100_100_100_111; 3'd5: yl_font=15'b111_101_101_101_111; 3'd6: yl_font=15'b111_100_111_001_111; 3'd7: yl_font=15'b111_010_010_010_010; default: yl_font=15'b0; endcase
+    reg [2:0] yrow; always @(*) case(y[5:3]) 3'd0: yrow=yl_font[14:12]; 3'd1: yrow=yl_font[11:9]; 3'd2: yrow=yl_font[8:6]; 3'd3: yrow=yl_font[5:3]; 3'd4: yrow=yl_font[2:0]; default: yrow=3'b0; endcase
+    wire draw_yl = game_over && in_yl && (x[4:0] < 5'd24) && ((x[4:3]==2'd0)?yrow[2]:(x[4:3]==2'd1)?yrow[1]:(x[4:3]==2'd2)?yrow[0]:1'b0);
 
     reg [5:0] bird_rgb;
     always @(*) case (p_color) 3'd1: bird_rgb=6'b11_11_00; 3'd2: bird_rgb=6'b11_11_01; 3'd3: bird_rgb=6'b11_10_00; 3'd4: bird_rgb=6'b00_00_00; 3'd5: bird_rgb=6'b10_00_00; 3'd6: bird_rgb=6'b11_00_00; default: bird_rgb=6'b0; endcase
@@ -241,6 +244,7 @@ module game_core (
     end
     always @(posedge clk) begin if (!rst_n||pitch==REST||!audio_active) begin tone_count<=16'd0; audio_out<=1'b0; end else if (tone_count==16'd0) begin tone_count<=hp_m1; audio_out<=~audio_out; end else tone_count<=tone_count-16'd1; end
     assign speaker = audio_out & ~({1'b0,step}==length-4'd1 && tick==2'd2) & audio_active;
-    wire _unused = &{1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], x_rel_yl[9:8], y_rel_yl[9:6], y_rel_yl[2:0], by_d[10:5]};
+
+    wire _unused = &{1'b0};
 
 endmodule
