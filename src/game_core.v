@@ -58,6 +58,11 @@ module game_core (
     localparam [9:0] PIPE_W     = 10'd48;  
     localparam [9:0] GAP_H      = 10'd130; 
     
+    // Pre-calculated Hitboxes for efficiency
+    localparam [9:0] HIT_X_MAX  = BIRD_X + BIRD_W;
+    localparam [9:0] HIT_X_MIN  = BIRD_X - PIPE_W;
+    localparam [9:0] FLOOR_Y    = 10'd480 - BIRD_H;
+
     // 1. Frame Throttle: Slows game movement/physics by 15%
     reg [4:0] throttle_count;
     reg game_tick;
@@ -66,7 +71,7 @@ module game_core (
             throttle_count <= 5'd0;
             game_tick <= 1'b0;
         end else if (frame) begin
-            if (throttle_count >= 5'd19) begin
+            if (throttle_count == 5'd19) begin
                 throttle_count <= 5'd0;
                 game_tick <= 1'b0; 
             end else begin
@@ -83,10 +88,10 @@ module game_core (
     wire flap_clean;
     reg  flap_last;
     
-    reg         db_s1, db_s2, db_clean;
+    reg  db_s1, db_s2, db_clean;
     always @(posedge clk) begin
         if (!rst_n) begin
-            db_s1 <= 1'b0; db_s2 <= 1'b0; db_clean <= 1'b0;
+            {db_clean, db_s2, db_s1} <= 3'b000;
         end else begin
             db_s1 <= flap_raw;
             db_s2 <= db_s1;
@@ -104,10 +109,11 @@ module game_core (
         else if (game_tick) jump_pending <= 1'b0;
     end
 
-    // 3. High-Speed Background RNG Counter 
+    // 3. High-Speed Background RNG (8-bit Galois LFSR for better randomness)
     reg [7:0] rand_y;
     always @(posedge clk) begin
-        rand_y <= rand_y + 8'd7;
+        if (!rst_n) rand_y <= 8'hFF;
+        else rand_y <= {rand_y[6:0], rand_y[7] ^ rand_y[5] ^ rand_y[4] ^ rand_y[3]};
     end
 
     // 4. Game State Registers
@@ -115,11 +121,9 @@ module game_core (
     wire [9:0] bird_y = {1'b0, bird_y_r};
     reg signed [4:0] velocity;   
     
-    reg [9:0] pipe1_x;
-    reg [7:0] pipe1_gap_y;
-    reg [9:0] pipe2_x;
-    reg [7:0] pipe2_gap_y;
-    reg        pipe1_passed, pipe2_passed;
+    reg [9:0] pipe1_x, pipe2_x;
+    reg [7:0] pipe1_gap_y, pipe2_gap_y;
+    reg       pipe1_passed, pipe2_passed;
 
     // Moving Pipe State
     reg pipe1_move, pipe2_move;
@@ -127,26 +131,25 @@ module game_core (
 
     reg [3:0] score_tens, score_ones;
     reg [3:0] h_score_tens, h_score_ones; 
-    reg        game_over;
+    reg       game_over;
     
     // Invert Mechanics State
     reg [4:0] invert_counter; 
     reg       invert_mode;    
 
-    wire signed [10:0] bird_y_11 = {1'b0, bird_y};
+    wire signed [10:0] bird_y_11 = {2'b00, bird_y_r};
     wire signed [10:0] vel_11    = {{6{velocity[4]}}, velocity};
     wire signed [10:0] next_y    = bird_y_11 + vel_11;
 
     wire [9:0] pipe_speed = 10'd3 + {6'd0, score_tens};
-    
     wire [10:0] p1_next = {1'b0, pipe1_x} - {1'b0, pipe_speed}; 
     wire [10:0] p2_next = {1'b0, pipe2_x} - {1'b0, pipe_speed};
 
-    wire p1_pass = !pipe1_passed && (pipe1_x < BIRD_X - PIPE_W);  
-    wire p2_pass = !pipe2_passed && (pipe2_x < BIRD_X - PIPE_W);
+    wire p1_pass = !pipe1_passed && (pipe1_x < HIT_X_MIN);  
+    wire p2_pass = !pipe2_passed && (pipe2_x < HIT_X_MIN);
     wire score_gt_high = (score_tens > h_score_tens) || ((score_tens == h_score_tens) && (score_ones > h_score_ones));
 
-    wire game_restart = game_over && (bird_y >= 10'd480 - BIRD_H) && jump_pending;
+    wire game_restart = game_over && (bird_y >= FLOOR_Y) && jump_pending;
 
     // 5. Main Game Loop
     always @(posedge clk) begin
@@ -159,20 +162,14 @@ module game_core (
             pipe2_gap_y    <= 8'd220;
             pipe1_passed   <= 1'b0;
             pipe2_passed   <= 1'b0;
-            pipe1_move     <= 1'b0;
-            pipe2_move     <= 1'b0;
-            pipe1_dir      <= 1'b0;
-            pipe2_dir      <= 1'b0;
-            score_tens     <= 4'd0;
-            score_ones     <= 4'd0;
-            h_score_tens   <= 4'd0;
-            h_score_ones   <= 4'd0;
+            {pipe1_move, pipe2_move, pipe1_dir, pipe2_dir} <= 4'b0000;
+            {score_tens, score_ones, h_score_tens, h_score_ones} <= 16'd0;
             invert_counter <= 5'd0;
             invert_mode    <= 1'b0;
             game_over      <= 1'b0;
         end else if (game_tick) begin
             
-            if (crash1 || crash2 || (bird_y >= 10'd480 - BIRD_H)) game_over <= 1'b1;
+            if (crash1 || crash2 || (bird_y >= FLOOR_Y)) game_over <= 1'b1;
 
             if (score_gt_high) begin
                 h_score_tens <= score_tens;
@@ -182,7 +179,7 @@ module game_core (
             if (game_over) begin
                 if (velocity < 5'sd15) velocity <= velocity + 5'sd1;
                 
-                if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd448;
+                if (next_y > FLOOR_Y) bird_y_r <= FLOOR_Y[8:0];
                 else bird_y_r <= next_y[8:0];
 
                 if (game_restart) begin
@@ -203,28 +200,26 @@ module game_core (
             end else begin
                 // INVERTED PHYSICS ENGINE
                 if (jump_pending) begin
-                    // BIT-HACK: {~invert_mode, 4'b1000} perfectly maps to +8 (01000) or -8 (11000)
-                    velocity <= {~invert_mode, 4'b1000}; 
+                    velocity <= invert_mode ? 5'sd8 : -5'sd8; 
                 end else begin
                     if (invert_mode) begin
-                        if (velocity > -5'sd15) velocity <= velocity - 5'sd1; // Fall UP
+                        if (velocity > -5'sd15) velocity <= velocity - 5'sd1; 
                     end else begin
-                        if (velocity < 5'sd15)  velocity <= velocity + 5'sd1; // Fall DOWN
+                        if (velocity < 5'sd15)  velocity <= velocity + 5'sd1; 
                     end
                 end
                 
                 if (next_y < 0) bird_y_r <= 9'd0; 
-                else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd448; 
+                else if (next_y > FLOOR_Y) bird_y_r <= FLOOR_Y[8:0]; 
                 else bird_y_r <= next_y[8:0];
                 
-                // Pipe 1 Update 
+                // Pipe 1 Update
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640;
                     pipe1_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ bird_y_r[6:0])};   
                     pipe1_passed <= 1'b0;
-                    // BOOLEAN OPTIMIZATION: A == B replaces (A ^ B) == 0
-                    pipe1_move <= (bird_y_r[2:1] == score_ones[1:0]); 
-                    pipe1_dir  <= bird_y_r[3];
+                    pipe1_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd0); 
+                    pipe1_dir  <= bird_y_r[3]; 
                 end else begin 
                     pipe1_x <= p1_next[9:0];
                     if (pipe1_move) begin
@@ -234,13 +229,12 @@ module game_core (
                     end
                 end
 
-                // Pipe 2 Update 
+                // Pipe 2 Update
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640;
                     pipe2_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ ~bird_y_r[6:0])};
                     pipe2_passed <= 1'b0;
-                    // BOOLEAN OPTIMIZATION: Targeting the bitwise inverse
-                    pipe2_move <= (bird_y_r[2:1] == ~score_ones[1:0]); 
+                    pipe2_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd3); 
                     pipe2_dir  <= bird_y_r[4];
                 end else begin
                     pipe2_x <= p2_next[9:0];
@@ -272,16 +266,16 @@ module game_core (
         end
     end
 
-    // 6. Collision Detection
+    // 6. Collision Detection (Using optimized hitboxes)
     wire [9:0] gap1_10 = {2'b00, pipe1_gap_y};
     wire [9:0] gap2_10 = {2'b00, pipe2_gap_y};
     wire [9:0] bot_pipe1_y = gap1_10 + GAP_H;
     wire [9:0] bot_pipe2_y = gap2_10 + GAP_H;
     
-    wire crash1 = (pipe1_x < BIRD_X + BIRD_W) && (pipe1_x > BIRD_X - PIPE_W) &&
+    wire crash1 = (pipe1_x < HIT_X_MAX) && (pipe1_x > HIT_X_MIN) &&
                   ((bird_y < gap1_10) || (bird_y + BIRD_H > bot_pipe1_y));
                   
-    wire crash2 = (pipe2_x < BIRD_X + BIRD_W) && (pipe2_x > BIRD_X - PIPE_W) &&
+    wire crash2 = (pipe2_x < HIT_X_MAX) && (pipe2_x > HIT_X_MIN) &&
                   ((bird_y < gap2_10) || (bird_y + BIRD_H > bot_pipe2_y));
 
     // 7. Graphics Hitboxes & Ducky Sprite
@@ -289,13 +283,11 @@ module game_core (
     wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
     wire [9:0] by_full = by_d[9:0];
     
-    wire in_bird_box = (x >= BIRD_X) && (x < BIRD_X + BIRD_W) && (by_d < {1'b0, BIRD_H});
+    wire in_bird_box = (x >= BIRD_X) && (x < HIT_X_MAX) && (by_d < {1'b0, BIRD_H});
     
     wire [2:0] bx = bx_full[4:2];
     wire [2:0] by_raw = by_full[4:2];
-    
-    // BIRD VERTICAL FLIP (XOR directly to ensure synth mapping)
-    wire [2:0] by = by_raw ^ {3{invert_mode}};
+    wire [2:0] by = invert_mode ? ~by_raw : by_raw;
 
     reg [2:0] p_color;
     always @(*) begin
@@ -343,26 +335,30 @@ module game_core (
 
     wire bird_hit = (p_color != 3'd0);
 
-    // Optimized Pipe Hitbox detection (REMOVED redundant y < 480 to save two 10-bit comparators)
-    wire in_p1x = (x >= pipe1_x) && (x < pipe1_x + 10'd48);
-    wire in_p2x = (x >= pipe2_x) && (x < pipe2_x + 10'd48);
+    wire in_p1x = (x >= pipe1_x) && (x < pipe1_x + PIPE_W);
+    wire in_p2x = (x >= pipe2_x) && (x < pipe2_x + PIPE_W);
     
-    wire t_p1_hit = in_p1x && (y < gap1_10);
-    wire b_p1_hit = in_p1x && (y >= bot_pipe1_y);
-    wire t_p2_hit = in_p2x && (y < gap2_10);
-    wire b_p2_hit = in_p2x && (y >= bot_pipe2_y);
-    wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
+    wire pipe_hit = (in_p1x && ((y < gap1_10) || (y >= bot_pipe1_y && y < 10'd480))) |
+                    (in_p2x && ((y < gap2_10) || (y >= bot_pipe2_y && y < 10'd480)));
 
-    // 8. SCORE Rendering (Reduced Subtractor Widths)
+    // 8. SCORE Rendering (Optimized with ROM Array)
     wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
     wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
-    wire [8:0] y_rel = y[8:0] - 9'd32;
-
     wire in_h_tens = (x >= 10'd560) && (x < 10'd584) && (y >= 10'd32) && (y < 10'd72);
     wire in_h_ones = (x >= 10'd592) && (x < 10'd616) && (y >= 10'd32) && (y < 10'd72);
     
     wire [3:0] dig = in_tens ? score_tens : in_ones ? score_ones : in_h_tens ? h_score_tens : h_score_ones;
     wire [4:0] dx  = x[4:0] - ((in_tens || in_ones) ? 5'd4 : 5'd16);
+    wire [9:0] y_rel = y - 10'd32;
+
+    wire [14:0] font_rom [0:9];
+    assign font_rom[0] = 15'b111_101_101_101_111; assign font_rom[1] = 15'b010_110_010_010_111;
+    assign font_rom[2] = 15'b111_001_111_100_111; assign font_rom[3] = 15'b111_001_111_001_111;
+    assign font_rom[4] = 15'b101_101_111_001_001; assign font_rom[5] = 15'b111_100_111_001_111;
+    assign font_rom[6] = 15'b111_100_111_101_111; assign font_rom[7] = 15'b111_001_001_001_001;
+    assign font_rom[8] = 15'b111_101_111_101_111; assign font_rom[9] = 15'b111_101_111_001_111;
+
+    wire [14:0] dfont = font_rom[dig];
     
     reg [2:0] drow;
     always @(*) begin
@@ -371,25 +367,14 @@ module game_core (
             3'd3: drow = dfont[5:3];   3'd4: drow = dfont[2:0];  default: drow = 3'b000;
         endcase
     end
-    reg [14:0] dfont;
-    always @(*) begin
-        case (dig)
-            4'd0: dfont = 15'b111_101_101_101_111; 4'd1: dfont = 15'b010_110_010_010_111;
-            4'd2: dfont = 15'b111_001_111_100_111; 4'd3: dfont = 15'b111_001_111_001_111;
-            4'd4: dfont = 15'b101_101_111_001_001; 4'd5: dfont = 15'b111_100_111_001_111;
-            4'd6: dfont = 15'b111_100_111_101_111; 4'd7: dfont = 15'b111_001_001_001_001;
-            4'd8: dfont = 15'b111_101_111_101_111; 4'd9: dfont = 15'b111_101_111_001_111;
-            default: dfont = 15'b0;
-        endcase
-    end
+    
     wire lit = (dx[4:3] == 2'd0) ? drow[2] : (dx[4:3] == 2'd1) ? drow[1] : (dx[4:3] == 2'd2) ? drow[0] : 1'b0;
     wire score_hit   = lit && (((score_tens != 4'd0) && in_tens) || in_ones);
     wire h_score_hit = lit && (((h_score_tens != 4'd0) && in_h_tens) || in_h_ones);
 
-    // 9. "OOPS!" Text Rendering (Reduced Subtractor Widths)
-    wire [8:0] x_rel_op = x[8:0] - 9'd240; 
-    wire [8:0] y_rel_op = y[8:0] - 9'd220;
-    
+    // 9. "OOPS!" Text Rendering (Optimized with ROM Array)
+    wire [9:0] x_rel_op = x - 10'd240; 
+    wire [9:0] y_rel_op = y - 10'd220;
     wire in_op = (x >= 10'd240) && (x < 10'd400) && (y >= 10'd220) && (y < 10'd260);
     
     wire [2:0] char_idx    = x_rel_op[7:5];    
@@ -398,25 +383,21 @@ module game_core (
     wire [2:0] char_y_grid = y_rel_op[5:3]; 
     wire [1:0] char_x_grid = char_x[4:3];   
 
-    reg [14:0] op_font;
-    always @(*) begin
-        case(char_idx)
-            3'd0, 3'd1: op_font = 15'b111_101_101_101_111; 
-            3'd2:       op_font = 15'b111_101_111_100_100; 
-            3'd3:       op_font = 15'b111_100_111_001_111; 
-            3'd4:       op_font = 15'b010_010_010_000_010; 
-            default:    op_font = 15'b0;
-        endcase
-    end
+    wire [14:0] oops_rom [0:4];
+    assign oops_rom[0] = 15'b111_101_101_101_111; // O
+    assign oops_rom[1] = 15'b111_101_101_101_111; // O
+    assign oops_rom[2] = 15'b111_101_111_100_100; // P
+    assign oops_rom[3] = 15'b111_100_111_001_111; // S
+    assign oops_rom[4] = 15'b010_010_010_000_010; // !
+    
+    wire [14:0] op_font = oops_rom[(char_idx > 3'd4) ? 3'd0 : char_idx];
+
     reg [2:0] op_yrow;
     always @(*) begin
         case (char_y_grid)
-            3'd0: op_yrow = op_font[14:12]; 
-            3'd1: op_yrow = op_font[11:9]; 
-            3'd2: op_yrow = op_font[8:6];
-            3'd3: op_yrow = op_font[5:3];   
-            3'd4: op_yrow = op_font[2:0];  
-            default: op_yrow = 3'b000;
+            3'd0: op_yrow = op_font[14:12]; 3'd1: op_yrow = op_font[11:9]; 
+            3'd2: op_yrow = op_font[8:6];   3'd3: op_yrow = op_font[5:3];   
+            3'd4: op_yrow = op_font[2:0];   default: op_yrow = 3'b000;
         endcase
     end
     wire op_lit = (char_x_grid == 2'd0) ? op_yrow[2] : (char_x_grid == 2'd1) ? op_yrow[1] : (char_x_grid == 2'd2) ? op_yrow[0] : 1'b0;
@@ -425,39 +406,36 @@ module game_core (
     reg [5:0] bird_rgb;
     always @(*) begin
         case (p_color)
-            3'd1: bird_rgb = 6'b11_11_00; 
-            3'd2: bird_rgb = 6'b11_11_01; 
-            3'd3: bird_rgb = 6'b11_10_00; 
-            3'd4: bird_rgb = 6'b00_00_00; 
-            3'd5: bird_rgb = 6'b10_00_00; 
-            3'd6: bird_rgb = 6'b11_00_00; 
+            3'd1: bird_rgb = 6'b11_11_00; 3'd2: bird_rgb = 6'b11_11_01; 
+            3'd3: bird_rgb = 6'b11_10_00; 3'd4: bird_rgb = 6'b00_00_00; 
+            3'd5: bird_rgb = 6'b10_00_00; 3'd6: bird_rgb = 6'b11_00_00; 
             default: bird_rgb = 6'b00_00_00;
         endcase
     end
 
-    // INVERTED COLOR DEFINITIONS
-    wire [5:0] bg_color   = invert_mode ? 6'b00_00_00 : 6'b00_10_11; // Black : Sky Blue
-    wire [5:0] pipe_color = invert_mode ? 6'b11_11_11 : 6'b00_11_00; // White : Green
+    wire [5:0] bg_color   = invert_mode ? 6'b00_00_00 : 6'b00_10_11;
+    wire [5:0] pipe_color = invert_mode ? 6'b11_11_11 : 6'b00_11_00;
 
-    // 10. Colour Palette Pipeline (Merged MUX for OOPS and Score)
-    assign rgb = !active                ? 6'b00_00_00 :
-                 (draw_op | score_hit)  ? 6'b11_11_11 : 
-                 h_score_hit            ? 6'b11_10_00 : 
-                 bird_hit               ? bird_rgb    : 
-                 pipe_hit               ? pipe_color  : 
-                 game_over              ? 6'b01_00_00 : 
-                                          bg_color    ; 
+    // 10. Colour Palette Pipeline
+    assign rgb = !active     ? 6'b00_00_00 :
+                 draw_op     ? 6'b11_11_11 : 
+                 score_hit   ? 6'b11_11_11 : 
+                 h_score_hit ? 6'b11_10_00 : 
+                 bird_hit    ? bird_rgb    : 
+                 pipe_hit    ? pipe_color  : 
+                 game_over   ? 6'b01_00_00 : 
+                               bg_color    ; 
 
     // 11. AUDIO SEQUENCER ENGINE
     localparam REST = 4'd0, D4 = 4'd1, Ds4 = 4'd2, E4 = 4'd3, F4 = 4'd4,
                C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8;
 
-    reg         audio_active;
-    reg [3:0]   index;   
+    reg       audio_active;
+    reg [3:0] index;   
     
     wire last_index = (index == 4'd2) || (index == 4'd6) || (index == 4'd10);
-    reg [3:0]   pitch;
-    reg [3:0]   length_m1; 
+    reg [3:0] pitch;
+    reg [3:0] length_m1; 
 
     reg game_over_last;
     reg tens_inc;   
@@ -495,30 +473,23 @@ module game_core (
             4'd7: begin pitch = F4;  length_m1 = 4'd3; end 
             4'd8: begin pitch = E4;  length_m1 = 4'd3; end
             4'd9: begin pitch = Ds4; length_m1 = 4'd3; end
-            4'd10: begin pitch = D4; length_m1 = 4'd7; end
+            4'd10:begin pitch = D4;  length_m1 = 4'd7; end
             default: begin pitch = REST; length_m1 = 4'd0; end
         endcase
     end
 
-    reg [15:0] hp_m1;
-    always @(*) begin
-        case (pitch)
-            D4:  hp_m1 = 16'd42661;
-            Ds4: hp_m1 = 16'd40191;
-            E4:  hp_m1 = 16'd37992;
-            F4:  hp_m1 = 16'd35815;
-            C5:  hp_m1 = 16'd23899;
-            E5:  hp_m1 = 16'd18967;
-            G5:  hp_m1 = 16'd15942;
-            C6:  hp_m1 = 16'd11949;
-            default: hp_m1 = 16'hFFFF;
-        endcase
-    end
+    wire [15:0] pitch_rom [0:8];
+    assign pitch_rom[REST]= 16'hFFFF; assign pitch_rom[D4]  = 16'd42661;
+    assign pitch_rom[Ds4] = 16'd40191; assign pitch_rom[E4]  = 16'd37992;
+    assign pitch_rom[F4]  = 16'd35815; assign pitch_rom[C5]  = 16'd23899;
+    assign pitch_rom[E5]  = 16'd18967; assign pitch_rom[G5]  = 16'd15942;
+    assign pitch_rom[C6]  = 16'd11949;
+
+    wire [15:0] hp_m1 = pitch_rom[pitch];
 
     reg [1:0] tick;   
-    reg [2:0]  step;   
+    reg [2:0] step;   
     wire sixteenth_done = frame && (tick == 2'd2);
-    
     wire note_done = sixteenth_done && ({1'b0, step} == length_m1);
 
     always @(posedge clk) begin
@@ -568,9 +539,10 @@ module game_core (
 
     // 12. Verilator Lint Fix 
     wire _unused_bits = &{
-        1'b0, dx[2:0], y_rel[8:6], y_rel[2:0], 
+        1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], 
         bx_full[1:0], by_full[1:0], 
-        x_rel_op[8], y_rel_op[8:6], y_rel_op[2:0]
+        x_rel_op[9:8], y_rel_op[9:6], y_rel_op[2:0],
+        char_idx[2:0]
     };
 
 endmodule
