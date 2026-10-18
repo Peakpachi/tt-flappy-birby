@@ -51,8 +51,7 @@ module game_core (
     output wire       speaker    
 );
 
-    // BIRD is 32x32. This allows us to use bit-shifting for scaling, 
-    // saving hundreds of logic gates so the design fits easily!
+    // BIRD is 32x32. Scaled by bit-shifting (bx_full[4:2])
     localparam [9:0] BIRD_X     = 10'd160; 
     localparam [9:0] BIRD_W     = 10'd32;  
     localparam [9:0] BIRD_H     = 10'd32;  
@@ -105,14 +104,10 @@ module game_core (
         else if (game_tick) jump_pending <= 1'b0;
     end
 
-    // 3. High-Speed Random Number Generators 
+    // 3. High-Speed Background RNG Counter (Incremented by prime to avoid phase lock)
     reg [7:0] rand_y;
-    reg [7:0] rand_m; // NEW: Secondary RNG for the 10% move chance
     always @(posedge clk) begin
-        if (rand_y >= 8'd180) rand_y <= 8'd0;
-        else rand_y <= rand_y + 1'b1;
-        
-        rand_m <= rand_m + 8'd13; // Ticks by prime to prevent correlation
+        rand_y <= rand_y + 8'd7;
     end
 
     // 4. Game State Registers
@@ -224,41 +219,36 @@ module game_core (
                 // Pipe 1 Update & Movement Engine
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640;
-                    pipe1_gap_y <= 8'd50 + rand_y;   
+                    pipe1_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ bird_y_r[6:0])};   
                     pipe1_passed <= 1'b0;
-                    // 10% chance to become a moving pipe (26/256 = 10.1%)
-                    pipe1_move <= (rand_m < 8'd26); 
-                    pipe1_dir <= rand_m[7]; // Randomize starting direction
+                    
+                    // 25% chance to move based on exact pixel height XOR'd with the score (1 in 4)
+                    pipe1_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd0); 
+                    pipe1_dir  <= bird_y_r[3]; // Initial direction based on height
                 end else begin 
                     pipe1_x <= p1_next[9:0];
                     if (pipe1_move) begin
-                        if (pipe1_dir == 1'b0) begin
-                            if (pipe1_gap_y > 8'd218) pipe1_dir <= 1'b1;
-                            else pipe1_gap_y <= pipe1_gap_y + 1'b1;
-                        end else begin
-                            if (pipe1_gap_y < 8'd52) pipe1_dir <= 1'b0;
-                            else pipe1_gap_y <= pipe1_gap_y - 1'b1;
-                        end
+                        pipe1_gap_y <= pipe1_dir ? (pipe1_gap_y - 1'b1) : (pipe1_gap_y + 1'b1);
+                        if (pipe1_gap_y >= 8'd218) pipe1_dir <= 1'b1;
+                        else if (pipe1_gap_y <= 8'd52) pipe1_dir <= 1'b0;
                     end
                 end
 
                 // Pipe 2 Update & Movement Engine
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640;
-                    pipe2_gap_y <= 8'd50 + rand_y;
+                    pipe2_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ ~bird_y_r[6:0])};
                     pipe2_passed <= 1'b0;
-                    pipe2_move <= (rand_m < 8'd26);
-                    pipe2_dir <= rand_m[6];
+                    
+                    // 25% chance to move (Targeting a different 2-bit XOR value than Pipe 1)
+                    pipe2_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd3); 
+                    pipe2_dir  <= bird_y_r[4];
                 end else begin
                     pipe2_x <= p2_next[9:0];
                     if (pipe2_move) begin
-                        if (pipe2_dir == 1'b0) begin
-                            if (pipe2_gap_y > 8'd218) pipe2_dir <= 1'b1;
-                            else pipe2_gap_y <= pipe2_gap_y + 1'b1;
-                        end else begin
-                            if (pipe2_gap_y < 8'd52) pipe2_dir <= 1'b0;
-                            else pipe2_gap_y <= pipe2_gap_y - 1'b1;
-                        end
+                        pipe2_gap_y <= pipe2_dir ? (pipe2_gap_y - 1'b1) : (pipe2_gap_y + 1'b1);
+                        if (pipe2_gap_y >= 8'd218) pipe2_dir <= 1'b1;
+                        else if (pipe2_gap_y <= 8'd52) pipe2_dir <= 1'b0;
                     end
                 end
 
@@ -295,7 +285,7 @@ module game_core (
     wire crash2 = (pipe2_x < BIRD_X + BIRD_W) && (pipe2_x > BIRD_X - PIPE_W) &&
                   ((bird_y < gap2_10) || (bird_y + BIRD_H > bot_pipe2_y));
 
-    // 7. Graphics Hitboxes & Ducky Sprite (Using Power-of-2 logic!)
+    // 7. Graphics Hitboxes & Ducky Sprite
     wire [9:0] bx_full = x - BIRD_X;
     wire [10:0] by_d = {1'b0, y} - {1'b0, bird_y};   
     wire [9:0] by_full = by_d[9:0];
@@ -306,7 +296,7 @@ module game_core (
     wire [2:0] bx = bx_full[4:2];
     wire [2:0] by_raw = by_full[4:2];
     
-    // BIRD VERTICAL FLIP: Inverting a 3-bit binary number mirrors it perfectly!
+    // BIRD VERTICAL FLIP
     wire [2:0] by = invert_mode ? ~by_raw : by_raw;
 
     reg [2:0] p_color;
@@ -355,17 +345,17 @@ module game_core (
 
     wire bird_hit = (p_color != 3'd0);
 
-    wire [10:0] dp1 = {1'b0, x} - {1'b0, pipe1_x};   
-    wire [10:0] dp2 = {1'b0, x} - {1'b0, pipe2_x};
-    wire in_p1x = (dp1 < 11'd48);
-    wire in_p2x = (dp2 < 11'd48);
+    // Optimized Pipe Hitbox detection (Replaced 11-bit subtractors with standard bounds logic)
+    wire in_p1x = (x >= pipe1_x) && (x < pipe1_x + 10'd48);
+    wire in_p2x = (x >= pipe2_x) && (x < pipe2_x + 10'd48);
+    
     wire t_p1_hit = in_p1x && (y < gap1_10);
     wire b_p1_hit = in_p1x && (y >= bot_pipe1_y) && (y < 10'd480);
     wire t_p2_hit = in_p2x && (y < gap2_10);
     wire b_p2_hit = in_p2x && (y >= bot_pipe2_y) && (y < 10'd480);
     wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
 
-    // 8. SCORE Rendering (Proper subtractor mapping so pixels aren't skewed)
+    // 8. SCORE Rendering 
     wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
     wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
     wire [9:0] y_rel = y - 10'd32;
@@ -413,12 +403,11 @@ module game_core (
     reg [14:0] op_font;
     always @(*) begin
         case(char_idx)
-            3'd0: op_font = 15'b111_101_101_101_111; // O
-            3'd1: op_font = 15'b111_101_101_101_111; // O
-            3'd2: op_font = 15'b111_101_111_100_100; // P
-            3'd3: op_font = 15'b111_100_111_001_111; // S
-            3'd4: op_font = 15'b010_010_010_000_010; // !
-            default: op_font = 15'b0;
+            3'd0, 3'd1: op_font = 15'b111_101_101_101_111; // O (Merged to save logic)
+            3'd2:       op_font = 15'b111_101_111_100_100; // P
+            3'd3:       op_font = 15'b111_100_111_001_111; // S
+            3'd4:       op_font = 15'b010_010_010_000_010; // !
+            default:    op_font = 15'b0;
         endcase
     end
     reg [2:0] op_yrow;
@@ -469,10 +458,9 @@ module game_core (
     reg         audio_active;
     reg [3:0]   index;   
     
-    // Stop condition catches the end of our 3-part Quack (Index 2)
     wire last_index = (index == 4'd2) || (index == 4'd6) || (index == 4'd10);
     reg [3:0]   pitch;
-    reg [3:0]   length;
+    reg [3:0]   length_m1; 
 
     reg game_over_last;
     reg tens_inc;   
@@ -500,22 +488,18 @@ module game_core (
 
     always @(*) begin
         case (index)
-            // THE QUACK: F4 -> Ds4 -> D4 rapid sweep
-            4'd0: begin pitch = F4;  length = 4'd1; end 
-            4'd1: begin pitch = Ds4; length = 4'd1; end 
-            4'd2: begin pitch = D4;  length = 4'd2; end 
-            
-            4'd3: begin pitch = C5;  length = 4'd2; end // High Score
-            4'd4: begin pitch = E5;  length = 4'd2; end
-            4'd5: begin pitch = G5;  length = 4'd2; end
-            
-            4'd6: begin pitch = C6;  length = 4'd6; end // +10 Points
-            
-            4'd7: begin pitch = F4;  length = 4'd4; end // Crash
-            4'd8: begin pitch = E4;  length = 4'd4; end
-            4'd9: begin pitch = Ds4; length = 4'd4; end
-            4'd10: begin pitch = D4; length = 4'd8; end
-            default: begin pitch = REST; length = 4'd1; end
+            4'd0: begin pitch = F4;  length_m1 = 4'd0; end 
+            4'd1: begin pitch = Ds4; length_m1 = 4'd0; end 
+            4'd2: begin pitch = D4;  length_m1 = 4'd1; end 
+            4'd3: begin pitch = C5;  length_m1 = 4'd1; end 
+            4'd4: begin pitch = E5;  length_m1 = 4'd1; end
+            4'd5: begin pitch = G5;  length_m1 = 4'd1; end
+            4'd6: begin pitch = C6;  length_m1 = 4'd5; end 
+            4'd7: begin pitch = F4;  length_m1 = 4'd3; end 
+            4'd8: begin pitch = E4;  length_m1 = 4'd3; end
+            4'd9: begin pitch = Ds4; length_m1 = 4'd3; end
+            4'd10: begin pitch = D4; length_m1 = 4'd7; end
+            default: begin pitch = REST; length_m1 = 4'd0; end
         endcase
     end
 
@@ -537,7 +521,8 @@ module game_core (
     reg [1:0] tick;   
     reg [2:0]  step;   
     wire sixteenth_done = frame && (tick == 2'd2);
-    wire note_done      = sixteenth_done && ({1'b0, step} == length - 4'd1);
+    
+    wire note_done = sixteenth_done && ({1'b0, step} == length_m1);
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -567,7 +552,7 @@ module game_core (
         end
     end
 
-    wire gap = ({1'b0, step} == length - 4'd1) && (tick == 2'd2);
+    wire gap = ({1'b0, step} == length_m1) && (tick == 2'd2);
 
     reg [15:0] tone_count;
     reg        audio_out;
