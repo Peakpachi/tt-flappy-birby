@@ -105,11 +105,14 @@ module game_core (
         else if (game_tick) jump_pending <= 1'b0;
     end
 
-    // 3. High-Speed Random Number Generator 
+    // 3. High-Speed Random Number Generators 
     reg [7:0] rand_y;
+    reg [7:0] rand_m; // NEW: Secondary RNG for the 10% move chance
     always @(posedge clk) begin
         if (rand_y >= 8'd180) rand_y <= 8'd0;
         else rand_y <= rand_y + 1'b1;
+        
+        rand_m <= rand_m + 8'd13; // Ticks by prime to prevent correlation
     end
 
     // 4. Game State Registers
@@ -122,6 +125,10 @@ module game_core (
     reg [9:0] pipe2_x;
     reg [7:0] pipe2_gap_y;
     reg        pipe1_passed, pipe2_passed;
+
+    // Moving Pipe State
+    reg pipe1_move, pipe2_move;
+    reg pipe1_dir,  pipe2_dir; // 0 = Down, 1 = Up
 
     reg [3:0] score_tens, score_ones;
     reg [3:0] h_score_tens, h_score_ones; 
@@ -157,6 +164,10 @@ module game_core (
             pipe2_gap_y    <= 8'd220;
             pipe1_passed   <= 1'b0;
             pipe2_passed   <= 1'b0;
+            pipe1_move     <= 1'b0;
+            pipe2_move     <= 1'b0;
+            pipe1_dir      <= 1'b0;
+            pipe2_dir      <= 1'b0;
             score_tens     <= 4'd0;
             score_ones     <= 4'd0;
             h_score_tens   <= 4'd0;
@@ -186,6 +197,8 @@ module game_core (
                     pipe2_x        <= 10'd960;
                     pipe1_passed   <= 1'b0;
                     pipe2_passed   <= 1'b0;
+                    pipe1_move     <= 1'b0;
+                    pipe2_move     <= 1'b0;
                     score_tens     <= 4'd0;
                     score_ones     <= 4'd0;
                     invert_counter <= 5'd0;
@@ -208,20 +221,45 @@ module game_core (
                 else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd448; 
                 else bird_y_r <= next_y[8:0];
                 
+                // Pipe 1 Update & Movement Engine
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640;
                     pipe1_gap_y <= 8'd50 + rand_y;   
                     pipe1_passed <= 1'b0;
+                    // 10% chance to become a moving pipe (26/256 = 10.1%)
+                    pipe1_move <= (rand_m < 8'd26); 
+                    pipe1_dir <= rand_m[7]; // Randomize starting direction
                 end else begin 
                     pipe1_x <= p1_next[9:0];
+                    if (pipe1_move) begin
+                        if (pipe1_dir == 1'b0) begin
+                            if (pipe1_gap_y > 8'd218) pipe1_dir <= 1'b1;
+                            else pipe1_gap_y <= pipe1_gap_y + 1'b1;
+                        end else begin
+                            if (pipe1_gap_y < 8'd52) pipe1_dir <= 1'b0;
+                            else pipe1_gap_y <= pipe1_gap_y - 1'b1;
+                        end
+                    end
                 end
 
+                // Pipe 2 Update & Movement Engine
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640;
                     pipe2_gap_y <= 8'd50 + rand_y;
                     pipe2_passed <= 1'b0;
+                    pipe2_move <= (rand_m < 8'd26);
+                    pipe2_dir <= rand_m[6];
                 end else begin
                     pipe2_x <= p2_next[9:0];
+                    if (pipe2_move) begin
+                        if (pipe2_dir == 1'b0) begin
+                            if (pipe2_gap_y > 8'd218) pipe2_dir <= 1'b1;
+                            else pipe2_gap_y <= pipe2_gap_y + 1'b1;
+                        end else begin
+                            if (pipe2_gap_y < 8'd52) pipe2_dir <= 1'b0;
+                            else pipe2_gap_y <= pipe2_gap_y - 1'b1;
+                        end
+                    end
                 end
 
                 // Score & Invert Tracker
