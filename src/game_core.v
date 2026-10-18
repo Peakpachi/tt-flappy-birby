@@ -327,7 +327,7 @@ module game_core (
     wire b_p2_hit = in_p2x && (y >= bot_pipe2_y) && (y < 10'd480);
     wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
 
-    // 8. SCORE Rendering
+    // 8. SCORE Rendering (Proper subtractor mapping so pixels aren't skewed)
     wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
     wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
     wire [9:0] y_rel = y - 10'd32;
@@ -424,9 +424,9 @@ module game_core (
                  game_over   ? 6'b01_00_00 : 
                                bg_color    ; 
 
-    // 11. AUDIO SEQUENCER ENGINE (Clean Quack Arpeggio)
+    // 11. AUDIO SEQUENCER ENGINE (F4 -> Ds4 -> D4 Quack Arpeggio)
     localparam REST = 4'd0, D4 = 4'd1, Ds4 = 4'd2, E4 = 4'd3, F4 = 4'd4,
-               C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8, G4 = 4'd11, B4 = 4'd12;
+               C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8;
 
     reg         audio_active;
     reg [3:0]   index;   
@@ -462,9 +462,9 @@ module game_core (
 
     always @(*) begin
         case (index)
-            // THE QUACK: A clean, low-throaty rapid sweep (No static!)
-            4'd0: begin pitch = B4;  length = 4'd1; end 
-            4'd1: begin pitch = G4;  length = 4'd1; end 
+            // THE QUACK: F4 -> Ds4 -> D4 rapid sweep
+            4'd0: begin pitch = F4;  length = 4'd1; end 
+            4'd1: begin pitch = Ds4; length = 4'd1; end 
             4'd2: begin pitch = D4;  length = 4'd2; end 
             
             4'd3: begin pitch = C5;  length = 4'd2; end // High Score
@@ -488,8 +488,6 @@ module game_core (
             Ds4: hp_m1 = 16'd40191;
             E4:  hp_m1 = 16'd37992;
             F4:  hp_m1 = 16'd35815;
-            G4:  hp_m1 = 16'd32110; // NEW: Low Mid
-            B4:  hp_m1 = 16'd25486; // NEW: High Mid
             C5:  hp_m1 = 16'd23899;
             E5:  hp_m1 = 16'd18967;
             G5:  hp_m1 = 16'd15942;
