@@ -104,7 +104,7 @@ module game_core (
         else if (game_tick) jump_pending <= 1'b0;
     end
 
-    // 3. High-Speed Background RNG Counter (Incremented by prime to avoid phase lock)
+    // 3. High-Speed Background RNG Counter 
     reg [7:0] rand_y;
     always @(posedge clk) begin
         rand_y <= rand_y + 8'd7;
@@ -203,7 +203,8 @@ module game_core (
             end else begin
                 // INVERTED PHYSICS ENGINE
                 if (jump_pending) begin
-                    velocity <= invert_mode ? 5'sd8 : -5'sd8; // Jump DOWN if inverted
+                    // BIT-HACK: {~invert_mode, 4'b1000} perfectly maps to +8 (01000) or -8 (11000)
+                    velocity <= {~invert_mode, 4'b1000}; 
                 end else begin
                     if (invert_mode) begin
                         if (velocity > -5'sd15) velocity <= velocity - 5'sd1; // Fall UP
@@ -216,15 +217,14 @@ module game_core (
                 else if (next_y > 10'd480 - BIRD_H) bird_y_r <= 9'd448; 
                 else bird_y_r <= next_y[8:0];
                 
-                // Pipe 1 Update & Movement Engine
+                // Pipe 1 Update 
                 if (p1_next[10]) begin
                     pipe1_x <= 10'd640;
                     pipe1_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ bird_y_r[6:0])};   
                     pipe1_passed <= 1'b0;
-                    
-                    // 25% chance to move based on exact pixel height XOR'd with the score (1 in 4)
-                    pipe1_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd0); 
-                    pipe1_dir  <= bird_y_r[3]; // Initial direction based on height
+                    // BOOLEAN OPTIMIZATION: A == B replaces (A ^ B) == 0
+                    pipe1_move <= (bird_y_r[2:1] == score_ones[1:0]); 
+                    pipe1_dir  <= bird_y_r[3];
                 end else begin 
                     pipe1_x <= p1_next[9:0];
                     if (pipe1_move) begin
@@ -234,14 +234,13 @@ module game_core (
                     end
                 end
 
-                // Pipe 2 Update & Movement Engine
+                // Pipe 2 Update 
                 if (p2_next[10]) begin
                     pipe2_x <= 10'd640;
                     pipe2_gap_y <= 8'd50 + {1'b0, (rand_y[6:0] ^ ~bird_y_r[6:0])};
                     pipe2_passed <= 1'b0;
-                    
-                    // 25% chance to move (Targeting a different 2-bit XOR value than Pipe 1)
-                    pipe2_move <= ((bird_y_r[2:1] ^ score_ones[1:0]) == 2'd3); 
+                    // BOOLEAN OPTIMIZATION: Targeting the bitwise inverse
+                    pipe2_move <= (bird_y_r[2:1] == ~score_ones[1:0]); 
                     pipe2_dir  <= bird_y_r[4];
                 end else begin
                     pipe2_x <= p2_next[9:0];
@@ -292,12 +291,11 @@ module game_core (
     
     wire in_bird_box = (x >= BIRD_X) && (x < BIRD_X + BIRD_W) && (by_d < {1'b0, BIRD_H});
     
-    // Scale by 4! Instead of dividing by 3, we just shift bits right by 2.
     wire [2:0] bx = bx_full[4:2];
     wire [2:0] by_raw = by_full[4:2];
     
-    // BIRD VERTICAL FLIP
-    wire [2:0] by = invert_mode ? ~by_raw : by_raw;
+    // BIRD VERTICAL FLIP (XOR directly to ensure synth mapping)
+    wire [2:0] by = by_raw ^ {3{invert_mode}};
 
     reg [2:0] p_color;
     always @(*) begin
@@ -345,20 +343,20 @@ module game_core (
 
     wire bird_hit = (p_color != 3'd0);
 
-    // Optimized Pipe Hitbox detection (Replaced 11-bit subtractors with standard bounds logic)
+    // Optimized Pipe Hitbox detection (REMOVED redundant y < 480 to save two 10-bit comparators)
     wire in_p1x = (x >= pipe1_x) && (x < pipe1_x + 10'd48);
     wire in_p2x = (x >= pipe2_x) && (x < pipe2_x + 10'd48);
     
     wire t_p1_hit = in_p1x && (y < gap1_10);
-    wire b_p1_hit = in_p1x && (y >= bot_pipe1_y) && (y < 10'd480);
+    wire b_p1_hit = in_p1x && (y >= bot_pipe1_y);
     wire t_p2_hit = in_p2x && (y < gap2_10);
-    wire b_p2_hit = in_p2x && (y >= bot_pipe2_y) && (y < 10'd480);
+    wire b_p2_hit = in_p2x && (y >= bot_pipe2_y);
     wire pipe_hit = t_p1_hit | b_p1_hit | t_p2_hit | b_p2_hit;
 
-    // 8. SCORE Rendering 
+    // 8. SCORE Rendering (Reduced Subtractor Widths)
     wire in_tens = (x >= 10'd292) && (x < 10'd316) && (y >= 10'd32) && (y < 10'd72);
     wire in_ones = (x >= 10'd324) && (x < 10'd348) && (y >= 10'd32) && (y < 10'd72);
-    wire [9:0] y_rel = y - 10'd32;
+    wire [8:0] y_rel = y[8:0] - 9'd32;
 
     wire in_h_tens = (x >= 10'd560) && (x < 10'd584) && (y >= 10'd32) && (y < 10'd72);
     wire in_h_ones = (x >= 10'd592) && (x < 10'd616) && (y >= 10'd32) && (y < 10'd72);
@@ -388,9 +386,9 @@ module game_core (
     wire score_hit   = lit && (((score_tens != 4'd0) && in_tens) || in_ones);
     wire h_score_hit = lit && (((h_score_tens != 4'd0) && in_h_tens) || in_h_ones);
 
-    // 9. "OOPS!" Text Rendering
-    wire [9:0] x_rel_op = x - 10'd240; 
-    wire [9:0] y_rel_op = y - 10'd220;
+    // 9. "OOPS!" Text Rendering (Reduced Subtractor Widths)
+    wire [8:0] x_rel_op = x[8:0] - 9'd240; 
+    wire [8:0] y_rel_op = y[8:0] - 9'd220;
     
     wire in_op = (x >= 10'd240) && (x < 10'd400) && (y >= 10'd220) && (y < 10'd260);
     
@@ -403,10 +401,10 @@ module game_core (
     reg [14:0] op_font;
     always @(*) begin
         case(char_idx)
-            3'd0, 3'd1: op_font = 15'b111_101_101_101_111; // O (Merged to save logic)
-            3'd2:       op_font = 15'b111_101_111_100_100; // P
-            3'd3:       op_font = 15'b111_100_111_001_111; // S
-            3'd4:       op_font = 15'b010_010_010_000_010; // !
+            3'd0, 3'd1: op_font = 15'b111_101_101_101_111; 
+            3'd2:       op_font = 15'b111_101_111_100_100; 
+            3'd3:       op_font = 15'b111_100_111_001_111; 
+            3'd4:       op_font = 15'b010_010_010_000_010; 
             default:    op_font = 15'b0;
         endcase
     end
@@ -441,17 +439,16 @@ module game_core (
     wire [5:0] bg_color   = invert_mode ? 6'b00_00_00 : 6'b00_10_11; // Black : Sky Blue
     wire [5:0] pipe_color = invert_mode ? 6'b11_11_11 : 6'b00_11_00; // White : Green
 
-    // 10. Colour Palette Pipeline
-    assign rgb = !active     ? 6'b00_00_00 :
-                 draw_op     ? 6'b11_11_11 : 
-                 score_hit   ? 6'b11_11_11 : 
-                 h_score_hit ? 6'b11_10_00 : 
-                 bird_hit    ? bird_rgb    : 
-                 pipe_hit    ? pipe_color  : 
-                 game_over   ? 6'b01_00_00 : 
-                               bg_color    ; 
+    // 10. Colour Palette Pipeline (Merged MUX for OOPS and Score)
+    assign rgb = !active                ? 6'b00_00_00 :
+                 (draw_op | score_hit)  ? 6'b11_11_11 : 
+                 h_score_hit            ? 6'b11_10_00 : 
+                 bird_hit               ? bird_rgb    : 
+                 pipe_hit               ? pipe_color  : 
+                 game_over              ? 6'b01_00_00 : 
+                                          bg_color    ; 
 
-    // 11. AUDIO SEQUENCER ENGINE (F4 -> Ds4 -> D4 Quack Arpeggio)
+    // 11. AUDIO SEQUENCER ENGINE
     localparam REST = 4'd0, D4 = 4'd1, Ds4 = 4'd2, E4 = 4'd3, F4 = 4'd4,
                C5 = 4'd5, E5 = 4'd6, G5 = 4'd7, C6 = 4'd8;
 
@@ -571,9 +568,9 @@ module game_core (
 
     // 12. Verilator Lint Fix 
     wire _unused_bits = &{
-        1'b0, dx[2:0], y_rel[9:6], y_rel[2:0], 
+        1'b0, dx[2:0], y_rel[8:6], y_rel[2:0], 
         bx_full[1:0], by_full[1:0], 
-        x_rel_op[9:8], y_rel_op[9:6], y_rel_op[2:0]
+        x_rel_op[8], y_rel_op[8:6], y_rel_op[2:0]
     };
 
 endmodule
