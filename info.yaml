@@ -18,9 +18,7 @@ project:
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "game_core.v"
-    - "ip_ball.v"
     - "ip_debounce.v"
-    - "ip_paddle.v"
     - "ip_rect.v"
     - "ip_tick.v"
     - "project.v"
